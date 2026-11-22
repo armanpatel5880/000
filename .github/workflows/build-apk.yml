@@ -1,0 +1,57 @@
+name: Build AP Tournament Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Bubblewrap CLI
+        run: |
+          npm install -g @bubblewrap/cli
+
+      - name: Generate TWA Android Project & Build APK
+        run: |
+          mkdir -p android-build
+          cd android-build
+          
+          # Initialize Bubblewrap project from your live Netlify PWA manifest
+          bubblewrap init --manifest https://ap-tournament-app.netlify.app/manifest.json --directory . --skipPwaValidation
+          
+          # Generate signing keystore automatically if not present
+          keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass aptournament123 -keypass aptournament123 \
+            -dname "CN=AP Tournament, OU=Gaming, O=AP Esports, L=Delhi, S=DL, C=IN"
+          
+          # Build signed APK
+          bubblewrap build --manifest https://ap-tournament-app.netlify.app/manifest.json
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AP-Tournament-Release-APK
+          path: android-build/*.apk
+          retention-days: 30

@@ -1,0 +1,729 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // -------------------------------------------------------------------------
+    // Global Safety Net - Deny everything by default
+    // -------------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Core Helpers & Tiered Identity Logic
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidDeviceId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_.\\-:]+$');
+    }
+
+    function isValidAdminId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 200;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function requesterExists() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function requesterDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isNotBanned() {
+      return !requesterExists() || requesterDoc().get('isBanned', false) != true;
+    }
+
+    // Strictly single-admin roster: ONLY armanpatel8428@gmail.com
+    // Note: App uses Email/Password login where Firebase email_verified can be false;
+    // Firebase Auth guarantees unique email ownership per project so token.email cannot be spoofed.
+    function isSuperOrAdminRoster() {
+      return isSignedIn() &&
+             request.auth.token.get('email', '').lower() == "armanpatel8428@gmail.com";
+    }
+
+    function isUserDocActiveStaffWithAnyPerm(uData, s1, s2, s3, s4, s5, s6) {
+      return uData.get('isBanned', false) != true &&
+             uData.get('isAdmin', false) != true &&
+             (uData.get('role', 'user') == 'staff' || uData.get('isStaff', false) == true) &&
+             uData.get('staffPermissions', {}) is map && (
+               (s1 != '' && uData.staffPermissions.get(s1, false) == true) ||
+               (s2 != '' && uData.staffPermissions.get(s2, false) == true) ||
+               (s3 != '' && uData.staffPermissions.get(s3, false) == true) ||
+               (s4 != '' && uData.staffPermissions.get(s4, false) == true) ||
+               (s5 != '' && uData.staffPermissions.get(s5, false) == true) ||
+               (s6 != '' && uData.staffPermissions.get(s6, false) == true)
+             );
+    }
+
+    // Verified Admin check: ONLY armanpatel8428@gmail.com
+    function isAdmin() {
+      return isSuperOrAdminRoster();
+    }
+
+    // Single-lookup Admin-or-Staff permission check (at most 2 calls total regardless of section count)
+    function isAdminOrStaff(s1, s2, s3, s4, s5, s6) {
+      return isSuperOrAdminRoster() || (
+        requesterExists() &&
+        isUserDocActiveStaffWithAnyPerm(requesterDoc(), s1, s2, s3, s4, s5, s6)
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validation Blueprints
+    // -------------------------------------------------------------------------
+    function isValidWalletMap(wallet) {
+      return wallet is map &&
+             wallet.keys().hasOnly(['deposit', 'winnings', 'bonus']) &&
+             wallet.get('deposit', 0) is number && wallet.get('deposit', 0) >= 0 &&
+             wallet.get('winnings', 0) is number && wallet.get('winnings', 0) >= 0 &&
+             wallet.get('bonus', 0) is number && wallet.get('bonus', 0) >= 0;
+    }
+
+    function isZeroWallet(wallet) {
+      return wallet is map &&
+             wallet.keys().hasOnly(['deposit', 'winnings', 'bonus']) &&
+             wallet.get('deposit', 0) == 0 &&
+             wallet.get('winnings', 0) == 0 &&
+             wallet.get('bonus', 0) == 0;
+    }
+
+    function isValidRole(role) {
+      return role is string && role in ['user', 'staff', 'admin'];
+    }
+
+    function isValidStaffPermissionsMap(perms) {
+      return perms is map &&
+             perms.keys().hasOnly([
+               'dashboard', 'withdrawals', 'notifications',
+               'usersAndBlacklist', 'matches', 'transactions',
+               'gameRules', 'gameModes', 'banners',
+               'referralAndSupport', 'paymentGateways'
+             ]) &&
+             (!('dashboard' in perms) || perms.dashboard is bool) &&
+             (!('withdrawals' in perms) || perms.withdrawals is bool) &&
+             (!('notifications' in perms) || perms.notifications is bool) &&
+             (!('usersAndBlacklist' in perms) || perms.usersAndBlacklist is bool) &&
+             (!('matches' in perms) || perms.matches is bool) &&
+             (!('transactions' in perms) || perms.transactions is bool) &&
+             (!('gameRules' in perms) || perms.gameRules is bool) &&
+             (!('gameModes' in perms) || perms.gameModes is bool) &&
+             (!('banners' in perms) || perms.banners is bool) &&
+             (!('referralAndSupport' in perms) || perms.referralAndSupport is bool) &&
+             (!('paymentGateways' in perms) || perms.paymentGateways is bool);
+    }
+
+    function isAllFalseStaffPermissions(perms) {
+      return isValidStaffPermissionsMap(perms) &&
+             perms.get('dashboard', false) == false &&
+             perms.get('withdrawals', false) == false &&
+             perms.get('notifications', false) == false &&
+             perms.get('usersAndBlacklist', false) == false &&
+             perms.get('matches', false) == false &&
+             perms.get('transactions', false) == false &&
+             perms.get('gameRules', false) == false &&
+             perms.get('gameModes', false) == false &&
+             perms.get('banners', false) == false &&
+             perms.get('referralAndSupport', false) == false &&
+             perms.get('paymentGateways', false) == false;
+    }
+
+    function isValidUserCreate(data) {
+      return data.keys().hasAll(['username', 'email', 'wallet']) &&
+             data.keys().hasOnly([
+               'username', 'email', 'phone', 'ign', 'gameIGNs', 'avatar',
+               'wallet', 'isKycVerified', 'stats', 'referralCode', 'referredBy',
+               'deviceId', 'deviceFingerprint', 'deviceInfo',
+               'lastLoginAt', 'lastActive', 'referralClaimed', 'isAdmin',
+               'role', 'staffPermissions',
+               'fcmEnabled', 'notificationsEnabled', 'createdAt'
+             ]) &&
+             data.username is string && data.username.size() >= 1 && data.username.size() <= 100 &&
+             data.email is string && data.email.size() <= 200 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('ign' in data) || (data.ign is string && data.ign.size() <= 50)) &&
+             (!('gameIGNs' in data) || (data.gameIGNs is map && data.gameIGNs.size() <= 10)) &&
+             (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2500)) &&
+             (!('referralCode' in data) || (data.referralCode is string && data.referralCode.size() <= 32)) &&
+             (!('referredBy' in data) || data.referredBy == null || (data.referredBy is string && data.referredBy.size() <= 100)) &&
+             (!('deviceId' in data) || (data.deviceId is string && data.deviceId.size() <= 128)) &&
+             (!('deviceFingerprint' in data) || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 256)) &&
+             (!('deviceInfo' in data) || (data.deviceInfo is string && data.deviceInfo.size() <= 256)) &&
+             (!('fcmEnabled' in data) || data.fcmEnabled is bool) &&
+             (!('notificationsEnabled' in data) || data.notificationsEnabled is bool) &&
+             (!('referralClaimed' in data) || data.referralClaimed is bool) &&
+             (!('isKycVerified' in data) || data.isKycVerified == false) &&
+             (!('isAdmin' in data) || data.isAdmin == false || isAdmin()) &&
+             (!('role' in data) || data.role == 'user' || isAdmin()) &&
+             (!('staffPermissions' in data) || isAllFalseStaffPermissions(data.staffPermissions) || isAdmin()) &&
+             (isZeroWallet(data.wallet) || isAdmin()) &&
+             (
+               !('stats' in data) ||
+               isAdmin() ||
+               (
+                 data.stats is map &&
+                 data.stats.keys().hasOnly(['matchesPlayed', 'totalWins', 'totalKills', 'totalWinnings', 'totalDeposited']) &&
+                 data.stats.get('matchesPlayed', 0) == 0 &&
+                 data.stats.get('totalWins', 0) == 0 &&
+                 data.stats.get('totalKills', 0) == 0 &&
+                 data.stats.get('totalWinnings', 0) == 0 &&
+                 data.stats.get('totalDeposited', 0) == 0
+               )
+             );
+    }
+
+    function isValidUserProfileFields(data) {
+      return data.keys().hasAll(['username', 'email', 'wallet']) &&
+             data.username is string && data.username.size() >= 1 && data.username.size() <= 100 &&
+             data.email is string && data.email.size() <= 200 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('ign' in data) || (data.ign is string && data.ign.size() <= 50)) &&
+             (!('gameIGNs' in data) || (data.gameIGNs is map && data.gameIGNs.size() <= 10)) &&
+             (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2500)) &&
+             (!('deviceId' in data) || (data.deviceId is string && data.deviceId.size() <= 128)) &&
+             (!('deviceFingerprint' in data) || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 256)) &&
+             (!('deviceInfo' in data) || (data.deviceInfo is string && data.deviceInfo.size() <= 256)) &&
+             (!('referralCode' in data) || (data.referralCode is string && data.referralCode.size() <= 32)) &&
+             (!('fcmEnabled' in data) || data.fcmEnabled is bool) &&
+             (!('notificationsEnabled' in data) || data.notificationsEnabled is bool) &&
+             (!('referralClaimed' in data) || data.referralClaimed is bool) &&
+             isValidWalletMap(data.wallet);
+    }
+
+    function isValidAdminUserFields(data) {
+      return isValidUserProfileFields(data) &&
+             (!('isAdmin' in data) || data.isAdmin is bool) &&
+             (!('isStaff' in data) || data.isStaff is bool) &&
+             (!('role' in data) || isValidRole(data.role)) &&
+             (!('staffPermissions' in data) || isValidStaffPermissionsMap(data.staffPermissions)) &&
+             (!('staffUpdatedBy' in data) || (data.staffUpdatedBy is string && data.staffUpdatedBy.size() <= 200)) &&
+             (!('permissions' in data) || data.permissions is map) &&
+             (!('isBanned' in data) || data.isBanned is bool) &&
+             (!('isDeviceBanned' in data) || data.isDeviceBanned is bool) &&
+             (!('banReason' in data) || (data.banReason is string && data.banReason.size() <= 500)) &&
+             (!('isKycVerified' in data) || data.isKycVerified is bool);
+    }
+
+    function isValidBanUpdate(data) {
+      return (!('isBanned' in data) || data.isBanned is bool) &&
+             (!('isDeviceBanned' in data) || data.isDeviceBanned is bool) &&
+             (!('banReason' in data) || data.banReason == null || (data.banReason is string && data.banReason.size() <= 500));
+    }
+
+    function isUserDocUpdateAllowed(userId, reqDoc, inc, ext) {
+      return (
+        // 1. Staff with 'usersAndBlacklist': ban/unban non-admin players only (cannot touch role/staffPermissions/wallet)
+        (
+          isUserDocActiveStaffWithAnyPerm(reqDoc, 'usersAndBlacklist', '', '', '', '', '') &&
+          ext.get('role', 'user') != 'admin' &&
+          ext.get('isAdmin', false) != true &&
+          isValidBanUpdate(inc) &&
+          inc.diff(ext).affectedKeys().hasOnly(['isBanned', 'isDeviceBanned', 'banReason', 'bannedAt']) &&
+          inc.get('role', 'user') == ext.get('role', 'user') &&
+          inc.get('staffPermissions', {}) == ext.get('staffPermissions', {}) &&
+          inc.get('isAdmin', false) == ext.get('isAdmin', false) &&
+          inc.get('isStaff', false) == ext.get('isStaff', false)
+        ) ||
+        // 3. Staff with 'withdrawals': winnings refund ONLY on rejected withdrawal
+        (
+          isUserDocActiveStaffWithAnyPerm(reqDoc, 'withdrawals', '', '', '', '', '') &&
+          isValidWalletMap(inc.wallet) &&
+          inc.diff(ext).affectedKeys().hasOnly(['wallet']) &&
+          inc.wallet.get('deposit', 0) == ext.wallet.get('deposit', 0) &&
+          inc.wallet.get('bonus', 0) == ext.wallet.get('bonus', 0) &&
+          inc.wallet.get('winnings', 0) >= ext.wallet.get('winnings', 0) &&
+          inc.get('role', 'user') == ext.get('role', 'user') &&
+          inc.get('staffPermissions', {}) == ext.get('staffPermissions', {}) &&
+          inc.get('isAdmin', false) == ext.get('isAdmin', false) &&
+          inc.get('isStaff', false) == ext.get('isStaff', false)
+        ) ||
+        // 4. Staff with 'matches': declare match results / match deletion refunds ONLY (wallet credit & stats)
+        (
+          isUserDocActiveStaffWithAnyPerm(reqDoc, 'matches', '', '', '', '', '') &&
+          isValidWalletMap(inc.wallet) &&
+          inc.diff(ext).affectedKeys().hasOnly(['wallet', 'stats']) &&
+          inc.wallet.get('deposit', 0) >= ext.wallet.get('deposit', 0) &&
+          inc.wallet.get('winnings', 0) >= ext.wallet.get('winnings', 0) &&
+          inc.wallet.get('bonus', 0) == ext.wallet.get('bonus', 0) &&
+          inc.get('role', 'user') == ext.get('role', 'user') &&
+          inc.get('staffPermissions', {}) == ext.get('staffPermissions', {}) &&
+          inc.get('isAdmin', false) == ext.get('isAdmin', false) &&
+          inc.get('isStaff', false) == ext.get('isStaff', false)
+        ) ||
+        // 5. Account Owner: non-increasing wallet deduction during JoinMatch or Withdraw request
+        (
+          userId == request.auth.uid &&
+          reqDoc.get('isBanned', false) != true &&
+          isValidUserProfileFields(inc) &&
+          inc.diff(ext).affectedKeys().hasOnly(['wallet']) &&
+          inc.wallet.get('deposit', 0) <= ext.wallet.get('deposit', 0) &&
+          inc.wallet.get('winnings', 0) <= ext.wallet.get('winnings', 0) &&
+          inc.wallet.get('bonus', 0) <= ext.wallet.get('bonus', 0) &&
+          inc.get('role', 'user') == ext.get('role', 'user') &&
+          inc.get('staffPermissions', {}) == ext.get('staffPermissions', {}) &&
+          inc.get('isAdmin', false) == ext.get('isAdmin', false) &&
+          inc.get('isStaff', false) == ext.get('isStaff', false)
+        ) ||
+        // 6. Account Owner: safe profile & device sync updates
+        (
+          userId == request.auth.uid &&
+          reqDoc.get('isBanned', false) != true &&
+          isValidUserProfileFields(inc) &&
+          inc.diff(ext).affectedKeys().hasOnly([
+            'username', 'phone', 'ign', 'gameIGNs', 'avatar',
+            'fcmEnabled', 'notificationsEnabled', 'deviceId',
+            'deviceFingerprint', 'deviceInfo', 'lastLoginAt',
+            'lastActive', 'referralCode', 'referralClaimed'
+          ]) &&
+          inc.wallet == ext.wallet &&
+          inc.get('role', 'user') == ext.get('role', 'user') &&
+          inc.get('staffPermissions', {}) == ext.get('staffPermissions', {}) &&
+          inc.get('isAdmin', false) == ext.get('isAdmin', false) &&
+          inc.get('isStaff', false) == ext.get('isStaff', false) &&
+          inc.get('permissions', {}) == ext.get('permissions', {}) &&
+          inc.get('staffUpdatedBy', '') == ext.get('staffUpdatedBy', '') &&
+          inc.get('isBanned', false) == ext.get('isBanned', false) &&
+          inc.get('isDeviceBanned', false) == ext.get('isDeviceBanned', false) &&
+          inc.get('isKycVerified', false) == ext.get('isKycVerified', false) &&
+          inc.get('stats', {}) == ext.get('stats', {}) &&
+          inc.email == ext.email &&
+          (
+            !inc.diff(ext).affectedKeys().hasAny(['referralClaimed']) ||
+            (ext.get('referralClaimed', false) == false && inc.referralClaimed == true)
+          )
+        )
+      );
+    }
+
+    function isValidGameMode(data) {
+      return data.keys().hasAll(['id', 'gameId', 'title', 'image']) &&
+             data.id is string && data.id.size() >= 1 && data.id.size() <= 100 &&
+             data.gameId is string && data.gameId.size() >= 1 && data.gameId.size() <= 50 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             data.image is string && data.image.size() <= 5000 &&
+             (!('subtitle' in data) || (data.subtitle is string && data.subtitle.size() <= 150)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
+             (!('order' in data) || data.order is number);
+    }
+
+    function isValidGame(data) {
+      return data.keys().hasAll(['title', 'image']) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             data.image is string && data.image.size() <= 5000 &&
+             (!('players' in data) || (data.players is number && data.players >= 0));
+    }
+
+    function isValidGameRule(data) {
+      return data.keys().hasAll(['rules']) &&
+             data.rules is list && data.rules.size() <= 100 &&
+             (data.rules.size() == 0 || data.rules[0] is string) &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 100)) &&
+             (!('type' in data) || (data.type is string && data.type.size() <= 100)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
+             (!('section' in data) || (data.section is string && data.section.size() <= 100));
+    }
+
+    function isValidMatch(data) {
+      return data.keys().hasAll(['gameId', 'title', 'entryFee']) &&
+             data.gameId is string && data.gameId.size() >= 1 && data.gameId.size() <= 50 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.entryFee is number && data.entryFee >= 0 &&
+             (!('totalSlots' in data) || (data.totalSlots is number && data.totalSlots >= 1 && data.totalSlots <= 200)) &&
+             (!('maxPlayers' in data) || (data.maxPlayers is number && data.maxPlayers >= 1 && data.maxPlayers <= 200)) &&
+             (!('players' in data) || (data.players is list && data.players.size() <= 200)) &&
+             (!('playersCount' in data) || (data.playersCount is number && data.playersCount >= 0 && data.playersCount <= 200)) &&
+             (!('status' in data) || (data.status is string && data.status in ['upcoming', 'active', 'ongoing', 'completed', 'cancelled'])) &&
+             (!('image' in data) || (data.image is string && data.image.size() <= 5000)) &&
+             (!('roomId' in data) || (data.roomId is string && data.roomId.size() <= 100)) &&
+             (!('roomPass' in data) || (data.roomPass is string && data.roomPass.size() <= 100)) &&
+             (!('roomPassword' in data) || (data.roomPassword is string && data.roomPassword.size() <= 100)) &&
+             (!('roomNotes' in data) || (data.roomNotes is string && data.roomNotes.size() <= 500)) &&
+             (!('map' in data) || (data.map is string && data.map.size() <= 100)) &&
+             (!('mode' in data) || (data.mode is string && data.mode.size() <= 50)) &&
+             (!('section' in data) || (data.section is string && data.section.size() <= 100));
+    }
+
+    function isValidRegistration(data) {
+      return data.keys().hasAll(['tournamentId', 'userId', 'ign']) &&
+             data.keys().hasOnly([
+               'tournamentId', 'userId', 'ign', 'slots', 'slot',
+               'teamMembers', 'totalSlotsBooked', 'joinedAt', 'gameId', 'status'
+             ]) &&
+             data.tournamentId is string && isValidId(data.tournamentId) &&
+             data.userId is string && isValidId(data.userId) &&
+             data.ign is string && data.ign.size() >= 1 && data.ign.size() <= 50 &&
+             (!('slots' in data) || (data.slots is list && data.slots.size() >= 1 && data.slots.size() <= 4)) &&
+             (!('teamMembers' in data) || (data.teamMembers is list && data.teamMembers.size() >= 1 && data.teamMembers.size() <= 4)) &&
+             (!('totalSlotsBooked' in data) || (data.totalSlotsBooked is int && data.totalSlotsBooked >= 1 && data.totalSlotsBooked <= 4)) &&
+             (!('gameId' in data) || (data.gameId is string && data.gameId.size() <= 50)) &&
+             (!('status' in data) || (data.status is string && data.status in ['active', 'cancelled', 'completed']));
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['userId', 'type', 'amount', 'status', 'createdAt']) &&
+             data.userId is string && isValidId(data.userId) &&
+             data.type is string && data.type in ['deposit', 'withdraw', 'withdrawal', 'win', 'entry', 'refund', 'bonus'] &&
+             data.amount is number && data.amount > 0 &&
+             data.status is string && data.status in ['completed', 'pending', 'failed', 'rejected', 'abandoned'] &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 250)) &&
+             (!('matchId' in data) || (data.matchId is string && data.matchId.size() <= 128)) &&
+             (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 500)) &&
+             (!('rejectedReason' in data) || (data.rejectedReason is string && data.rejectedReason.size() <= 500)) &&
+             (!('referenceId' in data) || (data.referenceId is string && data.referenceId.size() <= 128)) &&
+             (!('processedBy' in data) || (data.processedBy is string && data.processedBy.size() <= 200)) &&
+             (!('payoutMethod' in data) || (data.payoutMethod is string && data.payoutMethod in ['upi', 'bank'])) &&
+             (!('payoutDetails' in data) || data.payoutDetails is map);
+    }
+
+    function isValidUserTransactionCreate(data) {
+      return isValidTransaction(data) &&
+             data.userId == request.auth.uid &&
+             (
+               (
+                 data.type == 'withdraw' &&
+                 data.status == 'pending' &&
+                 data.amount >= 100 && data.amount <= 50000 &&
+                 data.keys().hasOnly([
+                   'userId', 'username', 'userPhone', 'userEmail',
+                   'type', 'amount', 'status', 'payoutMethod',
+                   'payoutDetails', 'title', 'createdAt'
+                 ])
+               ) ||
+               (
+                 data.type == 'entry' &&
+                 data.status == 'completed' &&
+                 'matchId' in data &&
+                 isValidId(data.matchId) &&
+                 data.keys().hasOnly([
+                   'userId', 'type', 'amount', 'matchId', 'status', 'title', 'createdAt'
+                 ]) &&
+                 exists(/databases/$(database)/documents/matches/$(data.matchId)) &&
+                 existsAfter(/databases/$(database)/documents/registrations/$(data.matchId + '_' + request.auth.uid))
+               )
+             );
+    }
+
+    function isValidBanner(data) {
+      return (
+               ('image' in data && data.image is string && data.image.size() >= 1 && data.image.size() <= 5000) ||
+               ('imageUrl' in data && data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 5000)
+             ) &&
+             (!('redirectUrl' in data) || (data.redirectUrl is string && data.redirectUrl.size() <= 1000)) &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 200)) &&
+             (!('type' in data) || (data.type is string && data.type.size() <= 50)) &&
+             (!('order' in data) || data.order is number) &&
+             (!('isActive' in data) || data.isActive is bool);
+    }
+
+    function isValidMatchResult(data) {
+      return data.keys().hasAll(['matchId', 'results']) &&
+             data.matchId is string && isValidId(data.matchId) &&
+             data.results is list && data.results.size() <= 200 &&
+             (!('matchTitle' in data) || (data.matchTitle is string && data.matchTitle.size() <= 200));
+    }
+
+    function isValidPaymentGateway(data) {
+      return data.keys().hasAll(['name']) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             (!('id' in data) || (data.id is string && data.id.size() >= 1 && data.id.size() <= 64)) &&
+             (!('isActive' in data) || data.isActive is bool) &&
+             (!('isProduction' in data) || data.isProduction is bool) &&
+             (!('apiKey' in data) || (data.apiKey is string && data.apiKey.size() <= 500)) &&
+             (!('secretKey' in data) || (data.secretKey is string && data.secretKey.size() <= 500)) &&
+             (!('webhookSecret' in data) || (data.webhookSecret is string && data.webhookSecret.size() <= 500)) &&
+             (!('merchantId' in data) || (data.merchantId is string && data.merchantId.size() <= 200)) &&
+             (!('upiId' in data) || (data.upiId is string && data.upiId.size() <= 200));
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['title']) &&
+             data.keys().hasOnly([
+               'title', 'body', 'message', 'type', 'audience',
+               'icon', 'badge', 'targetUserId', 'targetUsername',
+               'targetMatchId', 'targetMatchTitle', 'actionPage',
+               'actionText', 'readBy', 'createdAt'
+             ]) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             (!('body' in data) || (data.body is string && data.body.size() <= 1000)) &&
+             (!('message' in data) || (data.message is string && data.message.size() <= 1000)) &&
+             (!('type' in data) || (data.type is string && data.type.size() <= 50)) &&
+             (!('audience' in data) || (data.audience is string && data.audience in ['all', 'match', 'user'])) &&
+             (!('targetUserId' in data) || (data.targetUserId is string && data.targetUserId.size() <= 128)) &&
+             (!('targetMatchId' in data) || (data.targetMatchId is string && data.targetMatchId.size() <= 128)) &&
+             (!('actionPage' in data) || (data.actionPage is string && data.actionPage.size() <= 100)) &&
+             (!('readBy' in data) || (data.readBy is list && data.readBy.size() <= 5000));
+    }
+
+    function isValidBlacklistedDevice(data) {
+      return data.keys().hasAll(['deviceId', 'reason', 'isActive']) &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 500 &&
+             data.isActive is bool &&
+             (!('deviceFingerprint' in data) || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 256)) &&
+             (!('deviceInfo' in data) || (data.deviceInfo is string && data.deviceInfo.size() <= 256)) &&
+             (!('bannedUserId' in data) || (data.bannedUserId is string && data.bannedUserId.size() <= 128)) &&
+             (!('bannedUserEmail' in data) || (data.bannedUserEmail is string && data.bannedUserEmail.size() <= 200)) &&
+             (!('bannedUsername' in data) || (data.bannedUsername is string && data.bannedUsername.size() <= 100)) &&
+             (!('bannedUserIgn' in data) || (data.bannedUserIgn is string && data.bannedUserIgn.size() <= 100)) &&
+             (!('bannedBy' in data) || (data.bannedBy is string && data.bannedBy.size() <= 200));
+    }
+
+    // -------------------------------------------------------------------------
+    // Specific Collection Rules
+    // -------------------------------------------------------------------------
+
+    // Admins: Server-managed roster; never writable from client SDK
+    match /admins/{adminId} {
+      allow get: if isValidAdminId(adminId) && (
+        isAdmin() ||
+        (
+          isSignedIn() && (
+            adminId == request.auth.uid ||
+            (request.auth.token.get('email_verified', false) == true && adminId == request.auth.token.get('email', ''))
+          )
+        )
+      );
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Users: PII + wallet + roles/staffPermissions strictly protected
+    // ONLY isAdmin() can modify role, staffPermissions, isAdmin, isStaff, or permissions.
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (
+        isOwner(userId) ||
+        isAdminOrStaff('usersAndBlacklist', 'dashboard', 'withdrawals', 'transactions', 'notifications', 'matches')
+      );
+      allow list: if isAdminOrStaff('usersAndBlacklist', 'dashboard', 'withdrawals', 'transactions', 'notifications', '');
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUserCreate(incoming());
+      allow update: if isValidId(userId) && isSignedIn() && (
+        (isSuperOrAdminRoster() && isValidAdminUserFields(incoming())) ||
+        (requesterExists() && isUserDocUpdateAllowed(userId, requesterDoc(), incoming(), existing()))
+      );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Game Modes: Readable by authenticated users, writable by Admin or 'gameModes' Staff
+    match /gameModes/{modeId} {
+      allow get: if isValidId(modeId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(modeId) && isAdminOrStaff('gameModes', '', '', '', '', '') && isValidGameMode(incoming());
+      allow delete: if isValidId(modeId) && isAdminOrStaff('gameModes', '', '', '', '', '');
+    }
+
+    // Games: Supported game categories
+    match /games/{gameId} {
+      allow get: if isValidId(gameId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(gameId) && isAdminOrStaff('gameModes', 'matches', '', '', '', '') && isValidGame(incoming());
+      allow delete: if isValidId(gameId) && isAdminOrStaff('gameModes', 'matches', '', '', '', '');
+    }
+
+    // Game Rules: Mode-specific rules (Admin or 'gameRules' Staff)
+    match /gameRules/{ruleId} {
+      allow get: if isValidId(ruleId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(ruleId) && isAdminOrStaff('gameRules', '', '', '', '', '') && isValidGameRule(incoming());
+      allow delete: if isValidId(ruleId) && isAdminOrStaff('gameRules', '', '', '', '', '');
+    }
+
+    // Matches: Tournament instances; Admin or 'matches' Staff; players can ONLY atomically append slots on join
+    match /matches/{matchId} {
+      allow get: if isValidId(matchId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isValidId(matchId) && isAdminOrStaff('matches', '', '', '', '', '') && isValidMatch(incoming());
+      allow update: if isValidId(matchId) && isSignedIn() && (
+        (
+          isAdminOrStaff('matches', '', '', '', '', '') &&
+          isValidMatch(incoming())
+        ) ||
+        (
+          isNotBanned() &&
+          isValidMatch(incoming()) &&
+          existing().get('status', 'upcoming') != 'completed' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['players', 'playersCount']) &&
+          incoming().players is list &&
+          incoming().playersCount is int &&
+          incoming().playersCount == incoming().players.size() &&
+          incoming().players.size() > existing().get('players', []).size() &&
+          incoming().players.size() <= existing().get('totalSlots', existing().get('maxPlayers', 100)) &&
+          (incoming().players.size() - existing().get('players', []).size()) <= 4 &&
+          existsAfter(/databases/$(database)/documents/registrations/$(matchId + '_' + request.auth.uid))
+        ) ||
+        (
+          isNotBanned() &&
+          isValidMatch(incoming()) &&
+          existing().get('status', 'upcoming') in ['upcoming', 'active'] &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['players']) &&
+          incoming().players is list &&
+          incoming().players.size() == existing().get('players', []).size() &&
+          exists(/databases/$(database)/documents/registrations/$(matchId + '_' + request.auth.uid))
+        )
+      );
+      allow delete: if isValidId(matchId) && isAdminOrStaff('matches', '', '', '', '', '');
+    }
+
+    // Registrations: Strictly scoped to owner, Admin, 'matches' Staff, or 'usersAndBlacklist' Staff
+    match /registrations/{registrationId} {
+      allow get: if isValidId(registrationId) && isSignedIn() && (
+        existing().userId == request.auth.uid ||
+        isAdminOrStaff('matches', 'usersAndBlacklist', '', '', '', '')
+      );
+      allow list: if isSignedIn() && (
+        existing().userId == request.auth.uid ||
+        isAdminOrStaff('matches', 'usersAndBlacklist', '', '', '', '')
+      );
+      allow create: if isValidId(registrationId) &&
+                       isSignedIn() &&
+                       isNotBanned() &&
+                       isValidRegistration(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       registrationId == (incoming().tournamentId + '_' + request.auth.uid) &&
+                       exists(/databases/$(database)/documents/matches/$(incoming().tournamentId));
+      allow update: if isValidId(registrationId) && isSignedIn() && (
+        (
+          isAdminOrStaff('matches', '', '', '', '', '') &&
+          isValidRegistration(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().tournamentId == existing().tournamentId
+        ) ||
+        (
+          isNotBanned() &&
+          existing().userId == request.auth.uid &&
+          registrationId == (existing().tournamentId + '_' + request.auth.uid) &&
+          isValidRegistration(incoming()) &&
+          incoming().userId == existing().userId &&
+          incoming().tournamentId == existing().tournamentId &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['ign', 'teamMembers']) &&
+          exists(/databases/$(database)/documents/matches/$(existing().tournamentId)) &&
+          get(/databases/$(database)/documents/matches/$(existing().tournamentId)).data.get('status', 'upcoming') in ['upcoming', 'active']
+        )
+      );
+      allow delete: if isValidId(registrationId) && isAdminOrStaff('matches', '', '', '', '', '');
+    }
+
+    // Transactions: Immutable audit trail; Admin or authorized financial/match staff only
+    match /transactions/{transactionId} {
+      allow get: if isValidId(transactionId) && isSignedIn() && (
+        existing().userId == request.auth.uid ||
+        existing().type == 'win' ||
+        isAdminOrStaff('transactions', 'withdrawals', 'dashboard', 'matches', 'usersAndBlacklist', '')
+      );
+      allow list: if isSignedIn() && (
+        existing().userId == request.auth.uid ||
+        existing().type == 'win' ||
+        isAdminOrStaff('transactions', 'withdrawals', 'dashboard', 'matches', 'usersAndBlacklist', '')
+      );
+      allow create: if isValidId(transactionId) && isSignedIn() && (
+        (isAdminOrStaff('withdrawals', 'matches', '', '', '', '') && isValidTransaction(incoming())) ||
+        (isNotBanned() && isValidUserTransactionCreate(incoming()))
+      );
+      allow update: if isValidId(transactionId) &&
+                       isAdminOrStaff('withdrawals', '', '', '', '', '') &&
+                       isValidTransaction(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().type == existing().type &&
+                       incoming().amount == existing().amount;
+      allow delete: if false;
+    }
+
+    // App Settings: referral_support readable for Auth policies/links; writable by Admin or 'referralAndSupport' Staff
+    match /appSettings/{settingId} {
+      allow get: if isValidId(settingId) && (settingId == 'referral_support' || isSignedIn());
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(settingId) && isAdminOrStaff('referralAndSupport', '', '', '', '', '') && incoming() is map;
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    // Banners: Promotional banners (Admin or 'banners' Staff)
+    match /banners/{bannerId} {
+      allow get: if isValidId(bannerId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(bannerId) && isAdminOrStaff('banners', '', '', '', '', '') && isValidBanner(incoming());
+      allow delete: if isValidId(bannerId) && isAdminOrStaff('banners', '', '', '', '', '');
+    }
+
+    // Match Results: Declared winners and scores (Admin or 'matches' Staff)
+    match /matchResults/{matchId} {
+      allow get: if isValidId(matchId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(matchId) && isAdminOrStaff('matches', '', '', '', '', '') && isValidMatchResult(incoming());
+      allow delete: if isValidId(matchId) && isAdminOrStaff('matches', '', '', '', '', '');
+    }
+
+    // Payment Settings: Contains secret keys & webhook secrets; strictly Admin or 'paymentGateways' Staff
+    match /paymentSettings/{gatewayId} {
+      allow get: if isValidId(gatewayId) && isAdminOrStaff('paymentGateways', '', '', '', '', '');
+      allow list: if isAdminOrStaff('paymentGateways', '', '', '', '', '');
+      allow create, update: if isValidId(gatewayId) && isAdminOrStaff('paymentGateways', '', '', '', '', '') && isValidPaymentGateway(incoming());
+      allow delete: if isValidId(gatewayId) && isAdmin();
+    }
+
+    // Notifications: Users can read notifications and only append their own UID to readBy
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isSignedIn() && (
+        existing().get('targetUserId', '') == '' ||
+        existing().get('targetUserId', '') == request.auth.uid ||
+        isAdminOrStaff('notifications', 'matches', 'withdrawals', '', '', '')
+      );
+      allow list: if isSignedIn();
+      allow create: if isValidId(notificationId) &&
+                       isAdminOrStaff('notifications', 'matches', 'withdrawals', '', '', '') &&
+                       isValidNotification(incoming());
+      allow update: if isValidId(notificationId) && isSignedIn() && isValidNotification(incoming()) && (
+        isAdminOrStaff('notifications', '', '', '', '', '') ||
+        (
+          isNotBanned() &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['readBy']) &&
+          incoming().readBy is list &&
+          incoming().readBy.size() <= 5000 &&
+          incoming().readBy.hasAll(existing().get('readBy', [])) &&
+          incoming().readBy.size() <= existing().get('readBy', []).size() + 1 &&
+          request.auth.uid in incoming().readBy
+        )
+      );
+      allow delete: if isValidId(notificationId) && isAdminOrStaff('notifications', '', '', '', '', '');
+    }
+
+    // Legacy/Mirror support for tournaments
+    match /tournaments/{tournamentId} {
+      allow get: if isValidId(tournamentId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(tournamentId) && isAdminOrStaff('matches', '', '', '', '', '') && isValidMatch(incoming());
+      allow delete: if isValidId(tournamentId) && isAdminOrStaff('matches', '', '', '', '', '');
+    }
+
+    // Blacklisted Devices: Pre-login check via direct deviceId get; listing/writes Admin or 'usersAndBlacklist' Staff
+    match /blacklistedDevices/{deviceId} {
+      allow get: if isValidDeviceId(deviceId);
+      allow list: if isAdminOrStaff('usersAndBlacklist', '', '', '', '', '');
+      allow create, update: if isValidDeviceId(deviceId) && isAdminOrStaff('usersAndBlacklist', '', '', '', '', '') && isValidBlacklistedDevice(incoming());
+      allow delete: if isValidDeviceId(deviceId) && isAdminOrStaff('usersAndBlacklist', '', '', '', '', '');
+    }
+
+    // Meta/Counters
+    match /meta/{docId} {
+      allow get: if isValidId(docId) && isAdminOrStaff('matches', '', '', '', '', '');
+      allow list: if isAdminOrStaff('matches', '', '', '', '', '');
+      allow create, update: if isValidId(docId) && isAdminOrStaff('matches', '', '', '', '', '') && incoming() is map;
+      allow delete: if false;
+    }
+  }
+}

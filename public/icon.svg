@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="apGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#16A34A" />
+      <stop offset="100%" stop-color="#15803D" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#apGrad)" />
+  <path d="M256 76L406 132V256C406 348 342 414 256 444C170 414 106 348 106 256V132L256 76Z" fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round" />
+  <text x="256" y="255" text-anchor="middle" font-family="Arial Black, sans-serif" font-weight="900" font-size="136" fill="#FFFFFF" letter-spacing="-6">AP</text>
+  <path d="M204 286H308L294 340C288 360 274 372 256 372C238 372 224 360 218 340L204 286Z" fill="#FFFFFF" />
+  <rect x="236" y="368" width="40" height="22" rx="4" fill="#FFFFFF" />
+  <rect x="214" y="388" width="84" height="14" rx="7" fill="#FFFFFF" />
+</svg>

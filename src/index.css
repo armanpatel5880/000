@@ -1,0 +1,72 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Outfit:ital,wght@0,600;0,700;0,800;0,900;1,700;1,800;1,900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #16A34A;
+  --color-secondary: #22C55E;
+  --color-accent: #15803D;
+  --color-background: #F2FBF6;
+  --color-surface: #FFFFFF;
+  --color-surface-lighter: #ECFDF5;
+
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-[#F2FBF6] text-[#0F172A] font-sans selection:bg-[#16A34A]/25 selection:text-[#15803D] antialiased tracking-tight select-none;
+  }
+  input, textarea, select {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+  }
+  input::placeholder, textarea::placeholder {
+    color: #94A3B8 !important;
+    opacity: 1 !important;
+    font-weight: 400 !important;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display font-black tracking-tight text-[#0F172A];
+  }
+}
+
+@layer utilities {
+  .surface-card {
+    @apply bg-[#FFFFFF] border border-emerald-100 text-[#0F172A] shadow-xs hover:border-emerald-300;
+  }
+  .gradient-text {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-[#16A34A] to-[#15803D];
+  }
+  .gradient-bg {
+    @apply bg-gradient-to-br from-[#16A34A] to-[#15803D];
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:border-[#16A34A] hover:shadow-md active:scale-[0.99];
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 20px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+  }
+}
