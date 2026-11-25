@@ -38,20 +38,21 @@ jobs:
           mkdir -p android-build
           cd android-build
           
-          # Initialize Bubblewrap project from your live Netlify PWA manifest
-          bubblewrap init --manifest https://ap-tournament-app.netlify.app/manifest.json --directory . --skipPwaValidation
+          # Initialize Bubblewrap project non-interactively from live production manifest
+          yes "" | bubblewrap init --manifest https://ap-tournaments-official.netlify.app/manifest.json --directory . --skipPwaValidation
           
-          # Generate signing keystore automatically if not present
-          keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 \
+          # Generate signing keystore non-interactively
+          keytool -genkeypair -noprompt -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass aptournament123 -keypass aptournament123 \
             -dname "CN=AP Tournament, OU=Gaming, O=AP Esports, L=Delhi, S=DL, C=IN"
           
-          # Build signed APK
-          bubblewrap build --manifest https://ap-tournament-app.netlify.app/manifest.json
+          # Build signed release APK non-interactively
+          bubblewrap build --manifest https://ap-tournaments-official.netlify.app/manifest.json
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AP-Tournament-Release-APK
-          path: android-build/*.apk
+          path: android-build/**/*.apk
+          if-no-files-found: error
           retention-days: 30

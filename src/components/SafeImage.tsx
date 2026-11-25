@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import apOldLogoCircle from '../assets/images/ap_old_logo_circle.png';
-import apOldLogoSquare from '../assets/images/ap_old_logo_square.png';
 
 interface SafeImageProps {
   src?: string;
@@ -12,8 +10,8 @@ interface SafeImageProps {
   showLoader?: boolean;
 }
 
-export const APP_LOGO_CIRCLE = apOldLogoCircle;
-export const APP_LOGO_SQUARE = apOldLogoSquare;
+export const APP_LOGO_CIRCLE = '/pwa-192x192.png';
+export const APP_LOGO_SQUARE = '/pwa-512x512.png';
 export const APP_LOGO = APP_LOGO_SQUARE;
 
 export default function SafeImage({ 
