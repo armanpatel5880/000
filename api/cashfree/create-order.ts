@@ -71,7 +71,7 @@ export default async function handler(req: any, res: any) {
 
     const orderId = `order_${Date.now()}_${userId}`;
     
-    let baseUrlFull = process.env.APP_URL || "https://ap-tournaments-official.netlify.app";
+    let baseUrlFull = process.env.APP_URL || "https://ap-testing-url.netlify.app";
     if (!process.env.APP_URL) {
       const protocol = req.headers['x-forwarded-proto'] || 'https';
       const host = req.headers['x-forwarded-host'] || req.headers.host;

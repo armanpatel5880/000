@@ -38,8 +38,8 @@ jobs:
           mkdir -p android-build
           cd android-build
           
-          # Initialize Bubblewrap project non-interactively from live production manifest
-          yes "" | bubblewrap init --manifest https://ap-tournaments-official.netlify.app/manifest.json --directory . --skipPwaValidation
+          # Initialize Bubblewrap project non-interactively from live testing web app manifest
+          yes "" | bubblewrap init --manifest https://ap-testing-url.netlify.app/manifest.json --directory . --skipPwaValidation
           
           # Generate signing keystore non-interactively
           keytool -genkeypair -noprompt -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 \
@@ -47,7 +47,7 @@ jobs:
             -dname "CN=AP Tournament, OU=Gaming, O=AP Esports, L=Delhi, S=DL, C=IN"
           
           # Build signed release APK non-interactively
-          bubblewrap build --manifest https://ap-tournaments-official.netlify.app/manifest.json
+          bubblewrap build --manifest https://ap-testing-url.netlify.app/manifest.json
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
