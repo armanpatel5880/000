@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowLeft, User as UserIcon, Mail, Phone, Lock, Edit2, Check, X, Loader2, Gamepad2, Shield } from 'lucide-react';
 import { Page, User } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
@@ -15,22 +15,62 @@ export default function ProfileDetails({ user, onPageChange }: ProfileDetailsPro
   const [username, setUsername] = useState(user.username);
   const [phone, setPhone] = useState(user.phone);
   const [ffIgn, setFfIgn] = useState(user.gameIGNs?.freefire || user.ign || '');
+  const [ffUid, setFfUid] = useState(user.gameUIDs?.freefire || user.gameUid || '');
   const [bgmiIgn, setBgmiIgn] = useState(user.gameIGNs?.bgmi || '');
+  const [bgmiUid, setBgmiUid] = useState(user.gameUIDs?.bgmi || '');
   const [codmIgn, setCodmIgn] = useState(user.gameIGNs?.codm || '');
+  const [codmUid, setCodmUid] = useState(user.gameUIDs?.codm || '');
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+
+  useEffect(() => {
+    if (isEditing) return;
+    setUsername(user.username);
+    setPhone(user.phone);
+    setFfIgn(user.gameIGNs?.freefire || user.ign || '');
+    setFfUid(user.gameUIDs?.freefire || user.gameUid || '');
+    setBgmiIgn(user.gameIGNs?.bgmi || '');
+    setBgmiUid(user.gameUIDs?.bgmi || '');
+    setCodmIgn(user.gameIGNs?.codm || '');
+    setCodmUid(user.gameUIDs?.codm || '');
+  }, [user, isEditing]);
 
   const handleUpdateProfile = async () => {
     setLoading(true);
     try {
+      const cleanFfIgn = ffIgn.trim().slice(0, 50);
+      const cleanFfUid = ffUid.trim().slice(0, 50);
+      const cleanBgmiIgn = bgmiIgn.trim().slice(0, 50);
+      const cleanBgmiUid = bgmiUid.trim().slice(0, 50);
+      const cleanCodmIgn = codmIgn.trim().slice(0, 50);
+      const cleanCodmUid = codmUid.trim().slice(0, 50);
+
+      const resolvedIgn = cleanFfIgn || cleanBgmiIgn || cleanCodmIgn;
+      const resolvedUid = cleanFfUid || cleanBgmiUid || cleanCodmUid;
+      const cleanUsername = username.trim().slice(0, 50);
+      const cleanPhone = phone.replace(/\D/g, '').slice(0, 10) || phone.trim().slice(0, 30);
+      const isComplete = Boolean(
+        cleanUsername.length >= 2 &&
+        cleanPhone.replace(/\D/g, '').length >= 10 &&
+        resolvedIgn &&
+        resolvedUid
+      );
+
       await updateDoc(doc(db, 'users', auth.currentUser?.uid || ''), {
-        username,
-        phone,
-        ign: ffIgn,
+        username: cleanUsername,
+        phone: cleanPhone,
+        ign: resolvedIgn,
+        gameUid: resolvedUid,
+        profileCompleted: isComplete,
         gameIGNs: {
-          freefire: ffIgn,
-          bgmi: bgmiIgn,
-          codm: codmIgn
+          freefire: cleanFfIgn,
+          bgmi: cleanBgmiIgn,
+          codm: cleanCodmIgn
+        },
+        gameUIDs: {
+          freefire: cleanFfUid,
+          bgmi: cleanBgmiUid,
+          codm: cleanCodmUid
         }
       });
       setIsEditing(false);
@@ -157,73 +197,133 @@ export default function ProfileDetails({ user, onPageChange }: ProfileDetailsPro
              </div>
           </div>
 
-          {/* Game In-Game Names (IGN) */}
+          {/* Game In-Game Names (IGN) & UID */}
           <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-2xs">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Gamepad2 size={16} className="text-[#16A34A]" />
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">Game In-Game Names (IGN)</h4>
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">Game Profiles (IGN & UID)</h4>
               </div>
               {!isEditing && (
                 <button 
                   onClick={() => setIsEditing(true)}
                   className="text-[10px] font-black uppercase text-[#16A34A] hover:underline cursor-pointer"
                 >
-                  Edit IGNs
+                  Edit IGN & UID
                 </button>
               )}
             </div>
 
-            <div className="space-y-3">
-              <div>
-                <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">Free Fire IGN</label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    placeholder="Enter Free Fire IGN"
-                    value={ffIgn}
-                    onChange={(e) => setFfIgn(e.target.value)}
-                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
-                  />
-                ) : (
-                  <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900">
-                    {ffIgn || <span className="text-slate-400 italic">Not set</span>}
-                  </div>
-                )}
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">Free Fire IGN</label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="Enter Free Fire IGN"
+                      value={ffIgn}
+                      onChange={(e) => setFfIgn(e.target.value)}
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
+                    />
+                  ) : (
+                    <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 truncate">
+                      {ffIgn || <span className="text-slate-400 italic">Not set</span>}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">Free Fire UID</label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="Enter Free Fire UID"
+                      value={ffUid}
+                      onChange={(e) => setFfUid(e.target.value)}
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
+                    />
+                  ) : (
+                    <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 font-mono truncate">
+                      {ffUid || <span className="text-slate-400 italic font-sans">Not set</span>}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div>
-                <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">BGMI IGN</label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    placeholder="Enter BGMI IGN"
-                    value={bgmiIgn}
-                    onChange={(e) => setBgmiIgn(e.target.value)}
-                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
-                  />
-                ) : (
-                  <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900">
-                    {bgmiIgn || <span className="text-slate-400 italic">Not set</span>}
-                  </div>
-                )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">BGMI IGN</label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="Enter BGMI IGN"
+                      value={bgmiIgn}
+                      onChange={(e) => setBgmiIgn(e.target.value)}
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
+                    />
+                  ) : (
+                    <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 truncate">
+                      {bgmiIgn || <span className="text-slate-400 italic">Not set</span>}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">BGMI UID</label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="Enter BGMI UID"
+                      value={bgmiUid}
+                      onChange={(e) => setBgmiUid(e.target.value)}
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
+                    />
+                  ) : (
+                    <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 font-mono truncate">
+                      {bgmiUid || <span className="text-slate-400 italic font-sans">Not set</span>}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div>
-                <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">COD Mobile IGN</label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    placeholder="Enter CODM IGN"
-                    value={codmIgn}
-                    onChange={(e) => setCodmIgn(e.target.value)}
-                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
-                  />
-                ) : (
-                  <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900">
-                    {codmIgn || <span className="text-slate-400 italic">Not set</span>}
-                  </div>
-                )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">COD Mobile IGN</label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="Enter CODM IGN"
+                      value={codmIgn}
+                      onChange={(e) => setCodmIgn(e.target.value)}
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
+                    />
+                  ) : (
+                    <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 truncate">
+                      {codmIgn || <span className="text-slate-400 italic">Not set</span>}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold uppercase text-slate-500 mb-1 block">COD Mobile UID</label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="Enter CODM UID"
+                      value={codmUid}
+                      onChange={(e) => setCodmUid(e.target.value)}
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A]"
+                    />
+                  ) : (
+                    <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 font-mono truncate">
+                      {codmUid || <span className="text-slate-400 italic font-sans">Not set</span>}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

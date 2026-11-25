@@ -148,7 +148,8 @@ service cloud.firestore {
     function isValidUserCreate(data) {
       return data.keys().hasAll(['username', 'email', 'wallet']) &&
              data.keys().hasOnly([
-               'username', 'email', 'phone', 'ign', 'gameIGNs', 'avatar',
+               'username', 'email', 'phone', 'ign', 'gameIGNs', 'gameUid', 'gameUIDs', 'primaryGame',
+               'authProvider', 'profileCompleted', 'avatar',
                'wallet', 'isKycVerified', 'stats', 'referralCode', 'referredBy',
                'deviceId', 'deviceFingerprint', 'deviceInfo',
                'lastLoginAt', 'lastActive', 'referralClaimed', 'isAdmin',
@@ -160,6 +161,11 @@ service cloud.firestore {
              (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
              (!('ign' in data) || (data.ign is string && data.ign.size() <= 50)) &&
              (!('gameIGNs' in data) || (data.gameIGNs is map && data.gameIGNs.size() <= 10)) &&
+             (!('gameUid' in data) || (data.gameUid is string && data.gameUid.size() <= 50)) &&
+             (!('gameUIDs' in data) || (data.gameUIDs is map && data.gameUIDs.size() <= 10)) &&
+             (!('primaryGame' in data) || (data.primaryGame is string && data.primaryGame.size() <= 32)) &&
+             (!('authProvider' in data) || (data.authProvider is string && data.authProvider.size() <= 32)) &&
+             (!('profileCompleted' in data) || data.profileCompleted is bool) &&
              (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2500)) &&
              (!('referralCode' in data) || (data.referralCode is string && data.referralCode.size() <= 32)) &&
              (!('referredBy' in data) || data.referredBy == null || (data.referredBy is string && data.referredBy.size() <= 100)) &&
@@ -196,6 +202,11 @@ service cloud.firestore {
              (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
              (!('ign' in data) || (data.ign is string && data.ign.size() <= 50)) &&
              (!('gameIGNs' in data) || (data.gameIGNs is map && data.gameIGNs.size() <= 10)) &&
+             (!('gameUid' in data) || (data.gameUid is string && data.gameUid.size() <= 50)) &&
+             (!('gameUIDs' in data) || (data.gameUIDs is map && data.gameUIDs.size() <= 10)) &&
+             (!('primaryGame' in data) || (data.primaryGame is string && data.primaryGame.size() <= 32)) &&
+             (!('authProvider' in data) || (data.authProvider is string && data.authProvider.size() <= 32)) &&
+             (!('profileCompleted' in data) || data.profileCompleted is bool) &&
              (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 2500)) &&
              (!('deviceId' in data) || (data.deviceId is string && data.deviceId.size() <= 128)) &&
              (!('deviceFingerprint' in data) || (data.deviceFingerprint is string && data.deviceFingerprint.size() <= 256)) &&
@@ -287,10 +298,11 @@ service cloud.firestore {
           reqDoc.get('isBanned', false) != true &&
           isValidUserProfileFields(inc) &&
           inc.diff(ext).affectedKeys().hasOnly([
-            'username', 'phone', 'ign', 'gameIGNs', 'avatar',
+            'username', 'phone', 'ign', 'gameIGNs', 'gameUid', 'gameUIDs', 'primaryGame',
+            'authProvider', 'profileCompleted', 'avatar',
             'fcmEnabled', 'notificationsEnabled', 'deviceId',
             'deviceFingerprint', 'deviceInfo', 'lastLoginAt',
-            'lastActive', 'referralCode', 'referralClaimed'
+            'lastActive', 'referralCode', 'referredBy', 'referralClaimed'
           ]) &&
           inc.wallet == ext.wallet &&
           inc.get('role', 'user') == ext.get('role', 'user') &&
@@ -307,6 +319,14 @@ service cloud.firestore {
           (
             !inc.diff(ext).affectedKeys().hasAny(['referralClaimed']) ||
             (ext.get('referralClaimed', false) == false && inc.referralClaimed == true)
+          ) &&
+          (
+            !inc.diff(ext).affectedKeys().hasAny(['referredBy']) ||
+            (
+              ext.get('referralClaimed', false) == false &&
+              (ext.get('referredBy', null) == null || ext.get('referredBy', '') == '') &&
+              (inc.referredBy == null || (inc.referredBy is string && inc.referredBy.size() <= 100))
+            )
           )
         )
       );
@@ -363,12 +383,13 @@ service cloud.firestore {
     function isValidRegistration(data) {
       return data.keys().hasAll(['tournamentId', 'userId', 'ign']) &&
              data.keys().hasOnly([
-               'tournamentId', 'userId', 'ign', 'slots', 'slot',
+               'tournamentId', 'userId', 'ign', 'gameUid', 'slots', 'slot',
                'teamMembers', 'totalSlotsBooked', 'joinedAt', 'gameId', 'status'
              ]) &&
              data.tournamentId is string && isValidId(data.tournamentId) &&
              data.userId is string && isValidId(data.userId) &&
              data.ign is string && data.ign.size() >= 1 && data.ign.size() <= 50 &&
+             (!('gameUid' in data) || (data.gameUid is string && data.gameUid.size() <= 50)) &&
              (!('slots' in data) || (data.slots is list && data.slots.size() >= 1 && data.slots.size() <= 4)) &&
              (!('teamMembers' in data) || (data.teamMembers is list && data.teamMembers.size() >= 1 && data.teamMembers.size() <= 4)) &&
              (!('totalSlotsBooked' in data) || (data.totalSlotsBooked is int && data.totalSlotsBooked >= 1 && data.totalSlotsBooked <= 4)) &&
@@ -456,7 +477,7 @@ service cloud.firestore {
       return data.keys().hasAll(['title']) &&
              data.keys().hasOnly([
                'title', 'body', 'message', 'type', 'audience',
-               'icon', 'badge', 'targetUserId', 'targetUsername',
+               'icon', 'badge', 'imageUrl', 'targetUserId', 'targetUsername',
                'targetMatchId', 'targetMatchTitle', 'actionPage',
                'actionText', 'readBy', 'createdAt'
              ]) &&
@@ -465,6 +486,7 @@ service cloud.firestore {
              (!('message' in data) || (data.message is string && data.message.size() <= 1000)) &&
              (!('type' in data) || (data.type is string && data.type.size() <= 50)) &&
              (!('audience' in data) || (data.audience is string && data.audience in ['all', 'match', 'user'])) &&
+             (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 5000)) &&
              (!('targetUserId' in data) || (data.targetUserId is string && data.targetUserId.size() <= 128)) &&
              (!('targetMatchId' in data) || (data.targetMatchId is string && data.targetMatchId.size() <= 128)) &&
              (!('actionPage' in data) || (data.actionPage is string && data.actionPage.size() <= 100)) &&
@@ -611,7 +633,7 @@ service cloud.firestore {
           isValidRegistration(incoming()) &&
           incoming().userId == existing().userId &&
           incoming().tournamentId == existing().tournamentId &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['ign', 'teamMembers']) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['ign', 'gameUid', 'teamMembers']) &&
           exists(/databases/$(database)/documents/matches/$(existing().tournamentId)) &&
           get(/databases/$(database)/documents/matches/$(existing().tournamentId)).data.get('status', 'upcoming') in ['upcoming', 'active']
         )

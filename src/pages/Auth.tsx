@@ -348,6 +348,8 @@ export default function Auth({ onLogin }: AuthProps) {
                 username,
                 email,
                 phone,
+                authProvider: 'password',
+                profileCompleted: false,
                 ...DEFAULT_USER_DATA,
                 wallet: initialWallet,
                 referralCode: myReferralCode,
@@ -397,6 +399,7 @@ export default function Auth({ onLogin }: AuthProps) {
   };
 
   const handleGoogleLogin = async () => {
+    if (loading) return;
     setLoading(true);
     setErrors({});
     try {
@@ -408,10 +411,61 @@ export default function Auth({ onLogin }: AuthProps) {
         return;
       }
       const provider = new GoogleAuthProvider();
-      await signInWithRedirect(auth, provider);
+      provider.setCustomParameters({ prompt: 'select_account' });
+
+      try {
+        const result = await signInWithPopup(auth, provider);
+        const firebaseUser = result.user;
+        const uSnap = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (uSnap.exists()) {
+          const uData = uSnap.data();
+          if (uData?.isBanned) {
+            const banMsg = uData?.banReason || 'Your account has been permanently blocked by administration.';
+            let uIgn = extractUserIgn(uData);
+            if (!uIgn) {
+              uIgn = await fetchRegistrationIgnFallback(firebaseUser.uid);
+            }
+            await auth.signOut();
+            setUserBanInfo({
+              reason: banMsg,
+              username: uData?.username,
+              ign: uIgn,
+              email: uData?.email || firebaseUser.email || '',
+              userId: firebaseUser.uid
+            });
+            setErrors({ general: `Account Blocked: ${banMsg}` });
+            setLoading(false);
+            return;
+          }
+          await updateDoc(doc(db, 'users', firebaseUser.uid), {
+            authProvider: 'google',
+            lastLoginAt: serverTimestamp(),
+            lastActive: serverTimestamp(),
+            deviceId: getDeviceId(),
+            deviceFingerprint: getDeviceFingerprint(),
+            deviceInfo: getDeviceInfo()
+          }).catch(console.warn);
+        }
+        try {
+          sessionStorage.setItem(`ap_login_stamped_${firebaseUser.uid}`, '1');
+        } catch {}
+        onLogin();
+      } catch (popupErr: any) {
+        if (popupErr?.code === 'auth/popup-blocked') {
+          await signInWithRedirect(auth, provider);
+          return;
+        }
+        if (popupErr?.code === 'auth/popup-closed-by-user' || popupErr?.code === 'auth/cancelled-popup-request') {
+          setErrors({ general: 'Google sign-in was cancelled. Please try again.' });
+          setLoading(false);
+          return;
+        }
+        throw popupErr;
+      }
     } catch (error: any) {
       console.error('Google Login failed:', error);
       setErrors({ general: error.message || 'Google login failed. Try email login.' });
+    } finally {
       setLoading(false);
     }
   };

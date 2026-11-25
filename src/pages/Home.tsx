@@ -13,14 +13,27 @@ import MyMatches from '../components/MyMatches';
 import EsportsGamesGrid from '../components/EsportsGamesGrid';
 import RulesModal from '../components/RulesModal';
 import NotificationsModal from '../components/NotificationsModal';
+import CompleteProfileHomeView from '../components/CompleteProfileHomeView';
+import { PWAInstallButton } from '../components/PWAInstallButton';
+import { auth } from '../lib/firebase';
+import { getMissingProfileDetails } from '../utils/profileCompletion';
 
 interface HomeProps {
   user: User;
   onPageChange: (page: Page, id?: string) => void;
   joinedMatchIds: string[];
+  onLogout?: () => void;
 }
 
-export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) {
+export default function Home({ user, onPageChange, joinedMatchIds, onLogout }: HomeProps) {
+  const [adminSkippedProfile, setAdminSkippedProfile] = useState(false);
+  const [installBannerDismissed, setInstallBannerDismissed] = useState(() => {
+    try {
+      return sessionStorage.getItem('ap_install_banner_dismissed') === '1';
+    } catch {
+      return false;
+    }
+  });
   const [selectedPrizeMatch, setSelectedPrizeMatch] = useState<Tournament | null>(null);
   const [selectedResultsMatch, setSelectedResultsMatch] = useState<Tournament | null>(null);
   const [selectedRulesMatch, setSelectedRulesMatch] = useState<Tournament | null>(null);
@@ -109,6 +122,18 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
     }
   }, [selectedResultsMatch]);
 
+  const profileStatus = getMissingProfileDetails(user, auth.currentUser);
+  if (profileStatus.needsCompletion && !adminSkippedProfile) {
+    return (
+      <CompleteProfileHomeView
+        user={user}
+        status={profileStatus}
+        onAdminSkip={() => setAdminSkippedProfile(true)}
+        onLogout={onLogout}
+      />
+    );
+  }
+
   return (
     <div className="pb-28 max-w-lg mx-auto bg-[#F2FBF6] min-h-screen text-slate-900 select-none relative overflow-hidden">
       <div className="relative z-10">
@@ -130,6 +155,20 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
         />
 
         <HeroBannerCarousel banners={heroBanners} onPageChange={onPageChange} />
+
+        {!installBannerDismissed && (
+          <div className="px-4 sm:px-5 pt-3">
+            <PWAInstallButton
+              variant="card"
+              onDismiss={() => {
+                setInstallBannerDismissed(true);
+                try {
+                  sessionStorage.setItem('ap_install_banner_dismissed', '1');
+                } catch {}
+              }}
+            />
+          </div>
+        )}
 
         <MyMatches
           matches={matches}

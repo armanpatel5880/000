@@ -182,6 +182,7 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
     }
 
     if (status === 'active' && activeTab === 'upcoming') return true;
+    if (status === 'cancelled' && activeTab === 'completed') return true;
 
     if (status !== activeTab) return false;
 
@@ -449,6 +450,7 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
               const isJoined = joinedMatchIds.includes(t.id);
               const isOngoing = t.status === 'ongoing';
               const isCompleted = t.status === 'completed';
+              const isCancelled = t.status === 'cancelled';
 
               const getCalculatedPrizePool = () => {
                 if (t.prizePool && Number(t.prizePool) > 0) return Number(t.prizePool);
@@ -659,6 +661,10 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (isCancelled) {
+                            onPageChange(Page.MATCH_DETAILS, t.id);
+                            return;
+                          }
                           if (isCompleted) {
                             if (isJoined) {
                               setSelectedResultsMatch(t);
@@ -673,7 +679,9 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                           onPageChange(Page.MATCH_DETAILS, t.id);
                         }}
                         className={`px-6 sm:px-7 py-2.5 rounded-xl text-xs sm:text-sm font-bold tracking-wide transition-all shrink-0 active:scale-95 whitespace-nowrap ${
-                          isCompleted
+                          isCancelled
+                            ? 'bg-amber-50 border border-amber-200 text-amber-700'
+                            : isCompleted
                             ? isJoined
                               ? 'bg-[#ECFDF5] hover:bg-emerald-100 border border-[#BBF7D0] text-[#16A34A]'
                               : 'bg-slate-100 border border-slate-200 text-slate-400 cursor-default'
@@ -686,7 +694,9 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                             : 'bg-[#16A34A] hover:bg-[#15803D] text-white font-black shadow-xs'
                         }`}
                       >
-                        {isCompleted
+                        {isCancelled
+                          ? 'Cancelled'
+                          : isCompleted
                           ? isJoined
                             ? 'Results'
                             : 'Finished'

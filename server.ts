@@ -994,6 +994,18 @@ async function processZapUPIPayment(orderId: string, verifiedAmount: any, transa
     next(err);
   });
 
+  // Android TWA Digital Asset Links endpoint
+  serverApp.get("/.well-known/assetlinks.json", (_req, res) => {
+    const prodPath = path.join(process.cwd(), "dist", ".well-known", "assetlinks.json");
+    const devPath = path.join(process.cwd(), "public", ".well-known", "assetlinks.json");
+    const targetPath = fs.existsSync(prodPath) ? prodPath : devPath;
+    if (fs.existsSync(targetPath)) {
+      res.type("application/json").sendFile(targetPath);
+    } else {
+      res.status(404).json([]);
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     process.env.DISABLE_HMR = "true";

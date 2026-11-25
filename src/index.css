@@ -15,8 +15,15 @@
 }
 
 @layer base {
+  html, body {
+    overscroll-behavior-y: contain;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
   body {
     @apply bg-[#F2FBF6] text-[#0F172A] font-sans selection:bg-[#16A34A]/25 selection:text-[#15803D] antialiased tracking-tight select-none;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
   }
   input, textarea, select {
     user-select: text !important;

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useParams } from 'react-router-dom';
-import { ChevronLeft, User as UserIcon, Check, Loader2, X, AlertCircle, Sparkles, Trophy, Calendar, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, User as UserIcon, Check, Loader2, X, AlertCircle, Sparkles, Trophy, Calendar, CheckCircle2, Hash } from 'lucide-react';
 import { Page, User as UserType, Tournament } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { 
@@ -60,14 +60,17 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
   // Flow steps: 'select_position' | 'summary' | 'success'
   const [currentStep, setCurrentStep] = useState<'select_position' | 'summary' | 'success'>('select_position');
   
-  // State for positions & IGN
+  // State for positions, IGN & UID
   const [selectedSlots, setSelectedSlots] = useState<number[]>([]);
   const [inGameName, setInGameName] = useState('');
+  const [inGameUid, setInGameUid] = useState('');
   const [ignModalOpen, setIgnModalOpen] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [tempIgn, setTempIgn] = useState('');
+  const [tempUid, setTempUid] = useState('');
   const [activeEditingSlotIndex, setActiveEditingSlotIndex] = useState<number>(0);
   const [teammateIGNs, setTeammateIGNs] = useState<string[]>(['', '', '']); // For multi-slot/teammates
+  const [teammateUIDs, setTeammateUIDs] = useState<string[]>(['', '', '']); // UIDs for teammates
 
   const [loading, setLoading] = useState(false);
   const [matchData, setMatchData] = useState<Tournament | null>(null);
@@ -109,14 +112,24 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
     return () => unsubscribe();
   }, [matchId]);
 
-  // Autofill Game-Specific IGN from Profile
+  const getGameDisplayLabel = (gameKey: string) => {
+    if (gameKey === 'bgmi') return 'BGMI';
+    if (gameKey === 'codm') return 'COD MOBILE';
+    return 'FREE FIRE';
+  };
+
+  // Autofill Game-Specific IGN & UID from Profile
   useEffect(() => {
     if (matchData && user) {
       const gameKey = getGameKey(matchData.gameId, matchData.section);
       const savedGameIGN = user.gameIGNs?.[gameKey] || user.gameIGNs?.[matchData.gameId] || user.ign || (user as any)[`${gameKey}IGN`];
+      const savedGameUID = user.gameUIDs?.[gameKey] || user.gameUIDs?.[matchData.gameId] || user.gameUid || (user as any)[`${gameKey}UID`];
       
       if (savedGameIGN && !inGameName) {
         setInGameName(savedGameIGN);
+      }
+      if (savedGameUID && !inGameUid) {
+        setInGameUid(savedGameUID);
       }
     }
   }, [matchData, user]);
@@ -158,37 +171,56 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
     setActiveEditingSlotIndex(slotIndex);
     if (slotIndex === 0) {
       setTempIgn(inGameName || '');
+      setTempUid(inGameUid || '');
     } else {
       setTempIgn(teammateIGNs[slotIndex - 1] || '');
+      setTempUid(teammateUIDs[slotIndex - 1] || '');
     }
     setIgnModalOpen(true);
   };
 
   const handleSaveIgnModal = async () => {
-    const trimmed = tempIgn.trim();
-    if (!trimmed) {
+    const trimmedIgn = tempIgn.trim();
+    const trimmedUid = tempUid.trim();
+    if (!trimmedIgn) {
       alert('Please enter a valid in-game name');
+      return;
+    }
+    if (!trimmedUid) {
+      alert('Please enter a valid in-game UID');
+      return;
+    }
+    if (trimmedIgn.length > 50 || trimmedUid.length > 50) {
+      alert('In-Game Name and UID must be 50 characters or less');
       return;
     }
 
     if (activeEditingSlotIndex === 0) {
       const previousIgn = inGameName;
-      setInGameName(trimmed);
-      if (auth.currentUser && trimmed !== previousIgn) {
+      const previousUid = inGameUid;
+      setInGameName(trimmedIgn);
+      setInGameUid(trimmedUid);
+      if (auth.currentUser && (trimmedIgn !== previousIgn || trimmedUid !== previousUid)) {
         try {
           const gameKey = getGameKey(matchData?.gameId, matchData?.section);
           await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-            [`gameIGNs.${gameKey}`]: trimmed,
-            ign: trimmed
+            [`gameIGNs.${gameKey}`]: trimmedIgn,
+            ign: trimmedIgn,
+            [`gameUIDs.${gameKey}`]: trimmedUid,
+            gameUid: trimmedUid
           });
         } catch (e) {
-          console.warn('Could not auto-save IGN to profile:', e);
+          console.warn('Could not auto-save IGN & UID to profile:', e);
         }
       }
     } else {
-      const updated = [...teammateIGNs];
-      updated[activeEditingSlotIndex - 1] = trimmed;
-      setTeammateIGNs(updated);
+      const updatedIgn = [...teammateIGNs];
+      updatedIgn[activeEditingSlotIndex - 1] = trimmedIgn;
+      setTeammateIGNs(updatedIgn);
+
+      const updatedUid = [...teammateUIDs];
+      updatedUid[activeEditingSlotIndex - 1] = trimmedUid;
+      setTeammateUIDs(updatedUid);
     }
 
     setIgnModalOpen(false);
@@ -197,14 +229,14 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
   const handleFinalJoin = async () => {
     if (loading || selectedSlots.length === 0 || !matchId || !auth.currentUser) return;
     
-    if (!inGameName) {
+    if (!inGameName.trim() || !inGameUid.trim()) {
       openIgnModal(0);
       return;
     }
 
     if (selectedSlots.length > 1) {
       for (let i = 0; i < selectedSlots.length - 1; i++) {
-        if (!teammateIGNs[i]) {
+        if (!teammateIGNs[i]?.trim() || !teammateUIDs[i]?.trim()) {
           openIgnModal(i + 1);
           return;
         }
@@ -241,6 +273,9 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
 
         if (tournamentData.status === 'completed') {
           throw new Error('This match has already ended.');
+        }
+        if (tournamentData.status === 'cancelled') {
+          throw new Error('This match has been cancelled and refunded.');
         }
 
         const existingPlayers = (tournamentData.players as any[]) || [];
@@ -298,17 +333,24 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
           "wallet.bonus": newBonus
         });
 
-        const teamMembers = [
-          { name: inGameName, isOwner: true }
+        const cleanMainIgn = inGameName.trim();
+        const cleanMainUid = inGameUid.trim();
+        const teamMembers: { name: string; gameUid: string; isOwner: boolean }[] = [
+          { name: cleanMainIgn, gameUid: cleanMainUid, isOwner: true }
         ];
         for (let i = 0; i < selectedSlots.length - 1; i++) {
-          teamMembers.push({ name: teammateIGNs[i], isOwner: false } as any);
+          teamMembers.push({
+            name: teammateIGNs[i].trim(),
+            gameUid: teammateUIDs[i].trim(),
+            isOwner: false
+          });
         }
 
         const playersToAdd = selectedSlots.map((slot, index) => ({
           userId: uid,
           username: user.username,
-          ign: index === 0 ? inGameName : teammateIGNs[index - 1],
+          ign: index === 0 ? cleanMainIgn : teammateIGNs[index - 1].trim(),
+          gameUid: index === 0 ? cleanMainUid : teammateUIDs[index - 1].trim(),
           slot: slot
         }));
 
@@ -320,7 +362,8 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
         transaction.set(regRef, {
           tournamentId: matchId,
           userId: uid,
-          ign: inGameName,
+          ign: cleanMainIgn,
+          gameUid: cleanMainUid,
           slots: selectedSlots,
           teamMembers: teamMembers,
           totalSlotsBooked: selectedSlots.length,
@@ -479,21 +522,28 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
             </div>
           </div>
 
-          {/* Player IGN Form */}
+          {/* Player IGN & UID Form */}
           <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-xs">
             <h3 className="text-xs font-black uppercase tracking-wider text-[#16A34A]">Player Credentials</h3>
             
             <div>
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                In-Game Name (Position #{selectedSlots[0]})
+                In-Game Name & UID (Position #{selectedSlots[0]})
               </label>
-              <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                <span className="text-xs font-bold text-slate-900">{inGameName || 'No IGN Set'}</span>
+              <div className="flex items-center justify-between gap-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                <div className="min-w-0 space-y-0.5">
+                  <p className="text-xs font-bold text-slate-900 truncate">
+                    IGN: {inGameName || <span className="text-slate-400 italic">Not Set</span>}
+                  </p>
+                  <p className="text-[11px] font-bold text-slate-600 font-mono truncate">
+                    UID: {inGameUid || <span className="text-slate-400 italic font-sans">Not Set</span>}
+                  </p>
+                </div>
                 <button
                   onClick={() => openIgnModal(0)}
-                  className="text-[10px] font-black uppercase text-[#16A34A] hover:underline cursor-pointer"
+                  className="text-[10px] font-black uppercase text-[#16A34A] hover:underline shrink-0 cursor-pointer"
                 >
-                  {inGameName ? 'Edit' : 'Add IGN'}
+                  {inGameName && inGameUid ? 'Edit' : 'Add IGN & UID'}
                 </button>
               </div>
             </div>
@@ -501,15 +551,22 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
             {selectedSlots.length > 1 && selectedSlots.slice(1).map((slot, idx) => (
               <div key={slot}>
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                  Teammate #{idx + 2} IGN (Position #{slot})
+                  Teammate #{idx + 2} IGN & UID (Position #{slot})
                 </label>
-                <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                  <span className="text-xs font-bold text-slate-900">{teammateIGNs[idx] || 'No Teammate IGN'}</span>
+                <div className="flex items-center justify-between gap-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="text-xs font-bold text-slate-900 truncate">
+                      IGN: {teammateIGNs[idx] || <span className="text-slate-400 italic">Not Set</span>}
+                    </p>
+                    <p className="text-[11px] font-bold text-slate-600 font-mono truncate">
+                      UID: {teammateUIDs[idx] || <span className="text-slate-400 italic font-sans">Not Set</span>}
+                    </p>
+                  </div>
                   <button
                     onClick={() => openIgnModal(idx + 1)}
-                    className="text-[10px] font-black uppercase text-[#16A34A] hover:underline cursor-pointer"
+                    className="text-[10px] font-black uppercase text-[#16A34A] hover:underline shrink-0 cursor-pointer"
                   >
-                    {teammateIGNs[idx] ? 'Edit' : 'Add IGN'}
+                    {teammateIGNs[idx] && teammateUIDs[idx] ? 'Edit' : 'Add IGN & UID'}
                   </button>
                 </div>
               </div>
@@ -535,7 +592,7 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
           </div>
         </div>
 
-        {/* IGN Modal Overlay */}
+        {/* IGN & UID Modal Overlay */}
         <AnimatePresence>
           {ignModalOpen && (
             <motion.div
@@ -553,29 +610,52 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="bg-[#16A34A] text-white text-center py-3.5 px-4 font-black text-sm uppercase tracking-wider">
-                  ENTER IN-GAME NAME
+                  ENTER IN-GAME NAME & UID
                 </div>
-                <div className="p-5 text-slate-900">
-                  <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-2">
-                    EXACT FREE FIRE IGN {activeEditingSlotIndex > 0 ? `(PLAYER ${activeEditingSlotIndex + 1})` : ''}
-                  </label>
-                  <div className="relative mb-3">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                      <UserIcon size={18} />
+                <div className="p-5 text-slate-900 space-y-3.5">
+                  <div>
+                    <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
+                      EXACT {getGameDisplayLabel(getGameKey(matchData?.gameId, matchData?.section))} IGN {activeEditingSlotIndex > 0 ? `(PLAYER ${activeEditingSlotIndex + 1})` : ''}
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <UserIcon size={17} />
+                      </div>
+                      <input
+                        type="text"
+                        maxLength={50}
+                        value={tempIgn}
+                        onChange={(e) => setTempIgn(e.target.value)}
+                        placeholder="e.g. OP_GAMER_99"
+                        autoFocus
+                        className="w-full pl-10 pr-3 py-2.5 bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#16A34A] rounded-xl text-sm font-bold text-slate-900 outline-none transition-all"
+                      />
                     </div>
-                    <input
-                      type="text"
-                      value={tempIgn}
-                      onChange={(e) => setTempIgn(e.target.value)}
-                      placeholder="e.g. OP_GAMER_99"
-                      autoFocus
-                      className="w-full pl-10 pr-3 py-2.5 bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#16A34A] rounded-xl text-sm font-bold text-slate-900 outline-none transition-all"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSaveIgnModal();
-                      }}
-                    />
                   </div>
-                  <div className="flex items-center gap-3 mt-4">
+
+                  <div>
+                    <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
+                      EXACT {getGameDisplayLabel(getGameKey(matchData?.gameId, matchData?.section))} UID {activeEditingSlotIndex > 0 ? `(PLAYER ${activeEditingSlotIndex + 1})` : ''}
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <Hash size={17} />
+                      </div>
+                      <input
+                        type="text"
+                        maxLength={50}
+                        value={tempUid}
+                        onChange={(e) => setTempUid(e.target.value)}
+                        placeholder="e.g. 1234567890"
+                        className="w-full pl-10 pr-3 py-2.5 bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#16A34A] rounded-xl text-sm font-bold font-mono text-slate-900 placeholder:font-sans outline-none transition-all"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveIgnModal();
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-1">
                     <button
                       onClick={() => setIgnModalOpen(false)}
                       className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase tracking-wider cursor-pointer"
@@ -729,6 +809,10 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                   <span className="text-slate-500 font-bold text-[11px] uppercase">In-Game Name</span>
                   <span className="font-extrabold text-slate-900 truncate max-w-[150px]">{inGameName}</span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                  <span className="text-slate-500 font-bold text-[11px] uppercase">In-Game UID</span>
+                  <span className="font-extrabold font-mono text-slate-900 truncate max-w-[150px]">{inGameUid}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 font-bold text-[11px] uppercase">Entry Fee Paid</span>

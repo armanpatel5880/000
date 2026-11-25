@@ -9,6 +9,8 @@ import { db } from '../lib/firebase';
 import { collection, onSnapshot, getDocs, query, orderBy, limit, where, documentId, doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { Page, AppNotification, User, Tournament } from '../types';
 import { 
+  arePushNotificationsLocallyEnabled,
+  getNotificationPermissionState,
   registerNotificationServiceWorker, 
   requestMobileNotificationPermission, 
   triggerMobileStatusBarNotification 
@@ -20,6 +22,7 @@ import {
   MatchCountdownStatus 
 } from '../utils/matchAlertHelper';
 import { formatMatchTime } from '../utils/dateUtils';
+import SafeImage from './SafeImage';
 
 interface GlobalNotificationListenerProps {
   user?: User | null;
@@ -45,6 +48,7 @@ export default function GlobalNotificationListener({
   const [activePopup, setActivePopup] = useState<AppNotification | null>(null);
   const [showPermissionBanner, setShowPermissionBanner] = useState(false);
   const [isRequestingPermission, setIsRequestingPermission] = useState(false);
+  const [permissionDeniedHint, setPermissionDeniedHint] = useState(false);
 
   // 15-Minute Match Start Alert Toast & Dock States
   const [activeMatchToast, setActiveMatchToast] = useState<ActiveMatchAlert | null>(null);
@@ -63,22 +67,28 @@ export default function GlobalNotificationListener({
   onOpenNotificationsModalRef.current = onOpenNotificationsModal;
   const joinedMatchIdsKey = useMemo(() => [...joinedMatchIds].sort().join(','), [joinedMatchIds]);
 
-  // Initialize Service Worker & check permission on mount
+  // Initialize Service Worker & check Android/Browser notification permission when user logs in
   useEffect(() => {
     registerNotificationServiceWorker();
 
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      if (Notification.permission === 'default') {
-        const dismissed = sessionStorage.getItem('kg_notif_banner_dismissed');
-        if (!dismissed) {
-          const timer = setTimeout(() => {
-            setShowPermissionBanner(true);
-          }, 2500);
-          return () => clearTimeout(timer);
-        }
-      }
+    if (!user?.id) {
+      setShowPermissionBanner(false);
+      return;
     }
-  }, []);
+
+    const perm = getNotificationPermissionState();
+    if (perm === 'default' && arePushNotificationsLocallyEnabled()) {
+      const dismissed = sessionStorage.getItem('kg_notif_banner_dismissed');
+      if (!dismissed) {
+        const timer = setTimeout(() => {
+          setShowPermissionBanner(true);
+        }, 1800);
+        return () => clearTimeout(timer);
+      }
+    } else if (perm === 'granted') {
+      setShowPermissionBanner(false);
+    }
+  }, [user?.id]);
 
   // Listen for navigation requests coming from Service Worker notification clicks
   useEffect(() => {
@@ -164,6 +174,7 @@ export default function GlobalNotificationListener({
     return allMatches.filter(m => 
       joinedMatchIds.includes(m.id) && 
       m.status !== 'completed' &&
+      m.status !== 'cancelled' &&
       Boolean(m.time)
     );
   }, [joinedMatchIds, allMatches]);
@@ -386,17 +397,21 @@ export default function GlobalNotificationListener({
           }
 
           if (isForUser) {
+            const allowPush = user.notificationsEnabled !== false && arePushNotificationsLocallyEnabled();
             setActivePopup(data);
-            playMatchAlertChime('general');
-            triggerHapticFeedback([200, 100, 200]);
+            if (allowPush) {
+              playMatchAlertChime('general');
+              triggerHapticFeedback([200, 100, 200]);
 
-            triggerMobileStatusBarNotification(data.title, data.message, {
-              tag: data.id || 'ap-tournament-alert',
-              targetMatchId: data.targetMatchId,
-              actionPage: data.actionPage,
-              icon: '/pwa-192x192.png',
-              badge: '/badge-96x96.png'
-            });
+              triggerMobileStatusBarNotification(data.title, data.message, {
+                tag: data.id || 'ap-tournament-alert',
+                targetMatchId: data.targetMatchId,
+                actionPage: data.actionPage,
+                icon: '/pwa-192x192.png',
+                badge: '/badge-96x96.png',
+                image: data.imageUrl
+              });
+            }
 
             setTimeout(() => {
               setActivePopup((curr) => (curr?.id === notifId ? null : curr));
@@ -412,14 +427,21 @@ export default function GlobalNotificationListener({
       unsub();
       initialLoadDone.current = false;
     };
-  }, [user?.id]);
+  }, [user?.id, user?.notificationsEnabled]);
 
   const handleEnablePermission = async () => {
     setIsRequestingPermission(true);
+    setPermissionDeniedHint(false);
     try {
       const res = await requestMobileNotificationPermission(user?.id);
       if (res === 'granted') {
         setShowPermissionBanner(false);
+      } else if (res === 'denied') {
+        setPermissionDeniedHint(true);
+        setTimeout(() => {
+          setShowPermissionBanner(false);
+          setPermissionDeniedHint(false);
+        }, 4500);
       }
     } catch (e) {
       console.error(e);
@@ -629,10 +651,12 @@ export default function GlobalNotificationListener({
                 </div>
                 <div className="min-w-0">
                   <h4 className="text-xs font-black text-slate-900 uppercase tracking-tight truncate">
-                    Enable 15-Min Match Alerts
+                    {permissionDeniedHint ? 'Permission Blocked on Device' : 'Enable Match & Room Alerts'}
                   </h4>
                   <p className="text-[10px] text-slate-500 font-medium truncate mt-0.5">
-                    Receive Room ID, Password, and 15-minute countdown alerts!
+                    {permissionDeniedHint
+                      ? 'Allow Notifications in Android / Chrome Settings to get alerts.'
+                      : 'Allow notifications for Room ID, Password & 15-min match alerts!'}
                   </p>
                 </div>
               </div>
@@ -672,39 +696,52 @@ export default function GlobalNotificationListener({
               exit={{ opacity: 0, y: 40, scale: 0.95 }}
               transition={{ type: 'spring', damping: 20, stiffness: 300 }}
               onClick={handleTapGeneralPopup}
-              className="w-full max-w-md bg-white/95 backdrop-blur-xl border border-[#BBF7D0] p-3.5 rounded-2xl shadow-lg pointer-events-auto cursor-pointer flex items-center justify-between gap-3 group active:scale-[0.98] transition-transform text-slate-900"
+              className="w-full max-w-md bg-white/95 backdrop-blur-xl border border-[#BBF7D0] p-3.5 rounded-2xl shadow-lg pointer-events-auto cursor-pointer group active:scale-[0.98] transition-transform text-slate-900 overflow-hidden"
             >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-[#ECFDF5] border border-[#BBF7D0] flex items-center justify-center shrink-0 text-[#16A34A]">
-                  {getGeneralIcon(activePopup.type)}
+              {activePopup.imageUrl && (
+                <div className="w-full max-h-40 rounded-xl overflow-hidden border border-slate-200 mb-2.5 bg-slate-50">
+                  <SafeImage
+                    src={activePopup.imageUrl}
+                    alt={activePopup.title || 'Notification Image'}
+                    className="w-full h-36"
+                    imgClassName="w-full h-36 object-cover"
+                  />
                 </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[9px] font-black uppercase tracking-wider text-[#16A34A]">
-                      Live Notification
-                    </span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A] animate-pulse" />
-                  </div>
-                  <h4 className="text-xs font-black text-slate-900 truncate leading-tight mt-0.5">
-                    {activePopup.title}
-                  </h4>
-                  <p className="text-[11px] text-slate-500 truncate leading-tight mt-0.5 font-medium">
-                    {activePopup.message}
-                  </p>
-                </div>
-              </div>
+              )}
 
-              <div className="flex items-center gap-1 shrink-0">
-                <div className="w-7 h-7 rounded-lg bg-slate-100 group-hover:bg-[#ECFDF5] flex items-center justify-center text-slate-500 group-hover:text-[#16A34A] transition-colors">
-                  <ChevronRight size={15} />
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-[#ECFDF5] border border-[#BBF7D0] flex items-center justify-center shrink-0 text-[#16A34A]">
+                    {getGeneralIcon(activePopup.type)}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-black uppercase tracking-wider text-[#16A34A]">
+                        Live Notification
+                      </span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A] animate-pulse" />
+                    </div>
+                    <h4 className="text-xs font-black text-slate-900 truncate leading-tight mt-0.5">
+                      {activePopup.title}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 truncate leading-tight mt-0.5 font-medium">
+                      {activePopup.message}
+                    </p>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleDismissGeneralPopup}
-                  className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-colors"
-                >
-                  <X size={14} />
-                </button>
+
+                <div className="flex items-center gap-1 shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-slate-100 group-hover:bg-[#ECFDF5] flex items-center justify-center text-slate-500 group-hover:text-[#16A34A] transition-colors">
+                    <ChevronRight size={15} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDismissGeneralPopup}
+                    className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>

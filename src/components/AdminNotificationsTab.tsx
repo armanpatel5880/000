@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Bell, Send, Trash2, Check, Loader2, Trophy, Users, 
-  User as UserIcon, CheckCircle2, ChevronDown
+  User as UserIcon, CheckCircle2, ChevronDown, Image as ImageIcon, Upload, X
 } from 'lucide-react';
 import { 
   Page, Tournament, User, AppNotification, NotificationType
@@ -12,6 +12,8 @@ import {
   collection, addDoc, deleteDoc, doc, onSnapshot, 
   query, orderBy, serverTimestamp, limit 
 } from 'firebase/firestore';
+import { uploadOriginalImage } from '../utils/imageCompressor';
+import SafeImage from './SafeImage';
 
 interface AdminNotificationsTabProps {
   matches: Tournament[];
@@ -23,6 +25,8 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
   const [selectedAudience, setSelectedAudience] = useState<'all' | 'tournament' | 'custom'>('all');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [selectedMatchId, setSelectedMatchId] = useState('');
   const [selectedUserId, setSelectedUserId] = useState('');
   const [searchUserQuery, setSearchUserQuery] = useState('');
@@ -31,6 +35,27 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [historyNotifications, setHistoryNotifications] = useState<AppNotification[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+
+  const handleImageFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setIsUploadingImage(true);
+    try {
+      const uploadedUrl = await uploadOriginalImage(file);
+      if (uploadedUrl.length > 5000) {
+        alert('Image upload returned a large data string. Please paste a shorter hosted Image URL.');
+        return;
+      }
+      setImageUrl(uploadedUrl);
+    } catch (err: any) {
+      console.error('Notification image upload failed:', err);
+      alert('Failed to upload image. Please try again or paste an image URL.');
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
 
   // Realtime subscription to sent notifications
   useEffect(() => {
@@ -86,6 +111,13 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
         notifType = 'tournament';
       }
 
+      const cleanImageUrl = imageUrl.trim();
+      if (cleanImageUrl && cleanImageUrl.length > 5000) {
+        alert('Image URL must be 5000 characters or less.');
+        setIsSending(false);
+        return;
+      }
+
       const notifData: any = {
         title: title.trim(),
         message: body.trim(),
@@ -96,6 +128,10 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
         createdAt: serverTimestamp(),
         readBy: []
       };
+
+      if (cleanImageUrl) {
+        notifData.imageUrl = cleanImageUrl;
+      }
 
       if (selectedAudience === 'tournament' && selectedMatchId) {
         notifData.targetMatchId = selectedMatchId;
@@ -113,6 +149,7 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
 
       setTitle('');
       setBody('');
+      setImageUrl('');
       setSuccessToast('Notification sent successfully!');
       setTimeout(() => setSuccessToast(null), 3500);
     } catch (err: any) {
@@ -139,6 +176,7 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
     !searchUserQuery ||
     u.username?.toLowerCase().includes(searchUserQuery.toLowerCase()) ||
     u.ign?.toLowerCase().includes(searchUserQuery.toLowerCase()) ||
+    u.gameUid?.toLowerCase().includes(searchUserQuery.toLowerCase()) ||
     u.email?.toLowerCase().includes(searchUserQuery.toLowerCase()) ||
     u.phone?.includes(searchUserQuery)
   );
@@ -244,7 +282,7 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
           </label>
           <input
             type="text"
-            placeholder="Search player username, IGN or phone..."
+            placeholder="Search player username, IGN, UID or phone..."
             value={searchUserQuery}
             onChange={(e) => setSearchUserQuery(e.target.value)}
             className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-xs text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A] transition-colors"
@@ -265,7 +303,12 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
                         : 'text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    <span className="truncate text-[11px]">{u.username} {u.ign ? `(IGN: ${u.ign})` : ''}</span>
+                    <span className="truncate text-[11px]">
+                      {u.username}
+                      {u.ign ? ` (IGN: ${u.ign}` : ''}
+                      {u.gameUid ? `${u.ign ? ' | ' : ' ('}UID: ${u.gameUid}` : ''}
+                      {u.ign || u.gameUid ? ')' : ''}
+                    </span>
                     {isSelected && <Check size={14} className="text-[#16A34A]" />}
                   </div>
                 );
@@ -301,6 +344,51 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
             placeholder="Notification message..."
             className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-xs text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A] transition-colors leading-relaxed resize-none"
           />
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
+              <ImageIcon size={12} className="text-[#16A34A]" />
+              <span>IMAGE (OPTIONAL)</span>
+            </label>
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#ECFDF5] hover:bg-emerald-100 border border-[#BBF7D0] text-[#16A34A] rounded-xl text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors">
+              {isUploadingImage ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+              <span>{isUploadingImage ? 'Uploading...' : 'Upload Image'}</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageFileSelect}
+                disabled={isUploadingImage}
+                className="hidden"
+              />
+            </label>
+          </div>
+          <input
+            type="text"
+            value={imageUrl}
+            onChange={(e) => setImageUrl(e.target.value)}
+            placeholder="Paste image URL (https://...) or upload above"
+            className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-2xl px-4 py-3.5 text-xs font-semibold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A] transition-colors"
+          />
+          {imageUrl.trim() && (
+            <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-50">
+              <SafeImage
+                src={imageUrl.trim()}
+                alt="Notification Image Preview"
+                className="w-full h-36"
+                imgClassName="w-full h-36 object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => setImageUrl('')}
+                className="absolute top-2 right-2 p-1.5 bg-slate-900/75 hover:bg-slate-900 text-white rounded-full transition-colors cursor-pointer"
+                title="Remove image"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -377,6 +465,16 @@ export default function AdminNotificationsTab({ matches, users }: AdminNotificat
                   key={notif.id}
                   className="p-3.5 bg-white border border-slate-200 rounded-2xl flex items-start justify-between gap-3 text-xs shadow-2xs"
                 >
+                  {notif.imageUrl && (
+                    <div className="w-12 h-12 rounded-xl overflow-hidden border border-slate-200 shrink-0 bg-slate-50">
+                      <SafeImage
+                        src={notif.imageUrl}
+                        alt={notif.title}
+                        className="w-12 h-12"
+                        imgClassName="w-12 h-12 object-cover"
+                      />
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="font-bold text-slate-900 text-[11px] truncate">{notif.title}</p>
                     <p className="text-[10px] text-slate-600 truncate mt-0.5">{notif.message}</p>

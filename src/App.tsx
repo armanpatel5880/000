@@ -4,7 +4,7 @@ import { Page, User } from './types';
 import Header from './components/Header';
 import BottomNav from './components/BottomNav';
 import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, limit, getDocs, writeBatch, onSnapshot, increment, updateDoc, deleteField } from 'firebase/firestore';
 import { GAMES } from './constants';
 
@@ -306,6 +306,10 @@ export default function App() {
       }
     };
 
+    getRedirectResult(auth).catch((err) => {
+      console.warn('Auth redirect check notice:', err);
+    });
+
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (unsubscribeUser) {
         unsubscribeUser();
@@ -476,12 +480,14 @@ export default function App() {
               }
             }
 
+            const isGoogleProvider = firebaseUser.providerData.some((p) => p.providerId === 'google.com');
             const resolvedRole = resolveUserRole(data as Partial<User>, firebaseUser.email, firebaseUser.uid);
             const resolvedPermissions = normalizeStaffPermissions(data.staffPermissions);
 
             setUser({
               id: userDoc.id,
               ...data,
+              authProvider: data.authProvider || (isGoogleProvider ? 'google' : 'password'),
               isAdmin: isUserAdmin,
               role: resolvedRole,
               staffPermissions: resolvedPermissions
@@ -501,11 +507,14 @@ export default function App() {
             }
           } else {
             // For Google Auth or unexpected cases, create default profile
+            const isGoogleProvider = firebaseUser.providerData.some((p) => p.providerId === 'google.com');
             const isAdmin = (firebaseUser.email || '').trim().toLowerCase() === PRIMARY_ADMIN_EMAIL;
             const newUser: User = {
               username: firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`,
               email: firebaseUser.email || '',
               phone: firebaseUser.phoneNumber || '',
+              authProvider: isGoogleProvider ? 'google' : 'password',
+              profileCompleted: false,
               referralCode: generateReferralCode(),
               deviceId: getDeviceId(),
               deviceFingerprint: getDeviceFingerprint(),
@@ -807,7 +816,7 @@ export default function App() {
             <Route path="/signup" element={<Auth onLogin={handleLogin} />} />
             
             <Route path="/home" element={protect(
-              <Home user={user!} onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
+              <Home user={user!} onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} onLogout={handleLogout} />
             )} />
 
             <Route path="/game-modes/:gameId" element={protect(

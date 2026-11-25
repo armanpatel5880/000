@@ -18,7 +18,7 @@ import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage } from '../utils/imageCompressor';
 import AdminNotificationsTab from '../components/AdminNotificationsTab';
 import AdminStaffManagementTab from '../components/AdminStaffManagementTab';
-import { extractUserIgn, fetchRegistrationIgnFallback } from '../utils/deviceHelper';
+import { extractUserIgn, extractUserGameUid, fetchRegistrationIgnFallback } from '../utils/deviceHelper';
 import {
   getAllowedAdminSections,
   hasAdminPanelAccess,
@@ -231,6 +231,8 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState<{ isOpen: boolean, matchId: string }>({ isOpen: false, matchId: '' });
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [selectedMatchResults, setSelectedMatchResults] = useState<Tournament | null>(null);
+  const [viewPlayersMatch, setViewPlayersMatch] = useState<Tournament | null>(null);
+  const [matchPlayersSearch, setMatchPlayersSearch] = useState('');
   const [playerResults, setPlayerResults] = useState<Record<string, number>>({}); // userId -> value (kills or rank)
   const [playerPositionResults, setPlayerPositionResults] = useState<Record<string, number>>({}); // userId -> rank (for PER KILL matches)
   const [isProcessing, setIsProcessing] = useState(false);
@@ -259,8 +261,10 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
     customNotes: '',
     sendNotificationOnRoomDeclare: true
   });
-  const [matchStatusFilter, setMatchStatusFilter] = useState<'all' | 'need_room' | 'room_ready' | 'live' | 'completed'>('all');
+  const [matchStatusFilter, setMatchStatusFilter] = useState<'all' | 'need_room' | 'room_ready' | 'live' | 'completed' | 'cancelled'>('all');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [cancelRefundModalMatch, setCancelRefundModalMatch] = useState<Tournament | null>(null);
+  const [cancelReasonInput, setCancelReasonInput] = useState('');
 
   // Withdrawals Management State
   const [withdrawalFilter, setWithdrawalFilter] = useState<'all' | 'pending' | 'completed' | 'rejected'>('pending');
@@ -299,6 +303,18 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
   useModalBackHandler(isBannerModalOpen, () => setIsBannerModalOpen(false));
   useModalBackHandler(isDeclareRoomModalOpen, () => setIsDeclareRoomModalOpen(false));
   useModalBackHandler(isAddSectionModalOpen, () => setIsAddSectionModalOpen(false));
+  useModalBackHandler(Boolean(cancelRefundModalMatch), () => {
+    if (!isProcessing) {
+      setCancelRefundModalMatch(null);
+      setCancelReasonInput('');
+    }
+  });
+  useModalBackHandler(Boolean(cancelRefundModalMatch), () => {
+    if (!isProcessing) {
+      setCancelRefundModalMatch(null);
+      setCancelReasonInput('');
+    }
+  });
   const [deletingBannerId, setDeletingBannerId] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -656,10 +672,14 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
         byUsername.docs.forEach((d) => found.push({ id: d.id, ...d.data() } as User));
         const byDevice = await getDocs(query(collection(db, 'users'), where('deviceId', '==', raw), limit(10)));
         byDevice.docs.forEach((d) => found.push({ id: d.id, ...d.data() } as User));
+        const byGameUid = await getDocs(query(collection(db, 'users'), where('gameUid', '==', raw), limit(10)));
+        byGameUid.docs.forEach((d) => found.push({ id: d.id, ...d.data() } as User));
+        const byIgn = await getDocs(query(collection(db, 'users'), where('ign', '==', raw), limit(10)));
+        byIgn.docs.forEach((d) => found.push({ id: d.id, ...d.data() } as User));
       }
 
       if (found.length === 0) {
-        alert(`No user found in Firestore matching exact "${raw}". Try exact email, username, deviceId, or UID.`);
+        alert(`No user found in Firestore matching exact "${raw}". Try exact email, username, IGN, In-Game UID, deviceId, or UID.`);
       } else {
         setDbUserSearchResults((prev) => {
           const map = new Map<string, User>();
@@ -909,6 +929,183 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
     }
   };
 
+
+
+  const openCancelRefundModal = (match: Tournament) => {
+    setCancelRefundModalMatch(match);
+    setCancelReasonInput('');
+  };
+
+  const processCancelAndRefundMatch = async () => {
+    if (isProcessing || !cancelRefundModalMatch?.id) return;
+    const targetMatch = cancelRefundModalMatch;
+    const matchId = targetMatch.id;
+    const cleanReason = cancelReasonInput.trim();
+
+    if (!cleanReason) {
+      alert('Please enter a reason for cancelling the match.');
+      return;
+    }
+    if (cleanReason.length > 300) {
+      alert('Cancellation reason must be 300 characters or less.');
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      const refundedPlayers: { userId: string; username: string; amount: number }[] = [];
+      let matchDisplayTitle = targetMatch.title || 'Tournament Match';
+      let matchTag = targetMatch.displayId || (targetMatch.matchNumber ? `#${targetMatch.matchNumber}` : '');
+
+      await runTransaction(db, async (tx) => {
+        const matchRef = doc(db, 'matches', matchId);
+        const matchSnap = await tx.get(matchRef);
+
+        if (!matchSnap.exists()) {
+          throw new Error('Match no longer exists.');
+        }
+
+        const matchData = matchSnap.data() as Tournament;
+        if (matchData.status === 'completed') {
+          throw new Error('Match is already completed. Cannot cancel and refund.');
+        }
+        if (matchData.status === 'cancelled') {
+          throw new Error('Match has already been cancelled and refunded.');
+        }
+
+        matchDisplayTitle = matchData.title || matchDisplayTitle;
+        matchTag = matchData.displayId || (matchData.matchNumber ? `#${matchData.matchNumber}` : matchTag);
+
+        const players = matchData.players || [];
+        const entryFee = Math.max(0, Number(matchData.entryFee || 0));
+
+        // Aggregate refunds per unique userId so multi-slot players receive 1 atomic wallet update & 1 idempotent refund transaction
+        const refundByUser = new Map<string, { amount: number; username: string }>();
+        for (const player of players) {
+          if (!player?.userId || typeof player.userId !== 'string') continue;
+          const prev = refundByUser.get(player.userId);
+          refundByUser.set(player.userId, {
+            amount: (prev?.amount || 0) + entryFee,
+            username: prev?.username || player.ign || player.username || 'Player'
+          });
+        }
+
+        // All Firestore transaction reads must precede writes
+        const userEntries: {
+          userId: string;
+          username: string;
+          amount: number;
+          userRef: any;
+          userSnap: any;
+          refundRef: any;
+          refundSnap: any;
+        }[] = [];
+
+        for (const [userId, info] of refundByUser.entries()) {
+          const userRef = doc(db, 'users', userId);
+          const refundRef = doc(db, 'transactions', `refund_match_${matchId}_${userId}`);
+          const [userSnap, refundSnap] = await Promise.all([tx.get(userRef), tx.get(refundRef)]);
+          userEntries.push({
+            userId,
+            username: info.username,
+            amount: info.amount,
+            userRef,
+            userSnap,
+            refundRef,
+            refundSnap
+          });
+        }
+
+        const adminActor = (user?.email || auth.currentUser?.email || 'admin').slice(0, 200);
+        const txTitle = `REFUND: ${matchTag ? `${matchTag} - ` : ''}${matchDisplayTitle}`.slice(0, 250);
+        const txNote = `Match Cancelled: ${cleanReason}`.slice(0, 500);
+
+        for (const entry of userEntries) {
+          if (entry.userSnap.exists()) {
+            refundedPlayers.push({
+              userId: entry.userId,
+              username: entry.username,
+              amount: entry.amount
+            });
+
+            if (entry.amount > 0 && !entry.refundSnap.exists()) {
+              tx.update(entry.userRef, {
+                'wallet.deposit': increment(entry.amount)
+              });
+              tx.set(entry.refundRef, {
+                userId: entry.userId,
+                type: 'refund',
+                amount: entry.amount,
+                matchId,
+                status: 'completed',
+                title: txTitle,
+                adminNote: txNote,
+                createdAt: serverTimestamp()
+              });
+            }
+          }
+        }
+
+        tx.update(matchRef, {
+          status: 'cancelled',
+          cancelReason: cleanReason,
+          cancelledAt: serverTimestamp(),
+          cancelledBy: adminActor
+        });
+      });
+
+      // Best-effort update registration statuses & send per-player notifications with cancellation reason
+      if (refundedPlayers.length > 0) {
+        const regBatch = writeBatch(db);
+        refundedPlayers.forEach((p) => {
+          regBatch.update(doc(db, 'registrations', `${matchId}_${p.userId}`), {
+            status: 'cancelled'
+          });
+        });
+        await regBatch.commit().catch((err) => console.warn('Registration status sync skipped:', err));
+
+        const notifPromises = refundedPlayers.map((p) => {
+          const notifTitle = `Match Cancelled${p.amount > 0 ? ' & Refunded' : ''}: ${matchTag || matchDisplayTitle}`.slice(0, 200);
+          const notifBody = p.amount > 0
+            ? `Match "${matchDisplayTitle}" was cancelled. Reason: ${cleanReason}. ₹${p.amount} has been refunded to your Deposit Wallet.`
+            : `Match "${matchDisplayTitle}" was cancelled. Reason: ${cleanReason}.`;
+          const safeBody = notifBody.slice(0, 1000);
+
+          return addDoc(collection(db, 'notifications'), {
+            title: notifTitle,
+            message: safeBody,
+            body: safeBody,
+            type: p.amount > 0 ? 'wallet' : 'tournament',
+            audience: 'user',
+            targetUserId: p.userId,
+            targetUsername: String(p.username || 'Player').slice(0, 100),
+            targetMatchId: matchId,
+            targetMatchTitle: String(matchDisplayTitle).slice(0, 200),
+            actionPage: p.amount > 0 ? Page.WALLET : Page.MATCH_DETAILS,
+            actionText: p.amount > 0 ? 'View Wallet' : 'View Details',
+            readBy: [],
+            createdAt: serverTimestamp()
+          });
+        });
+        await Promise.allSettled(notifPromises);
+      }
+
+      const totalRefundedAmount = refundedPlayers.reduce((sum, p) => sum + p.amount, 0);
+      setCancelRefundModalMatch(null);
+      setCancelReasonInput('');
+      alert(
+        refundedPlayers.length > 0
+          ? `✅ Match cancelled! ${refundedPlayers.length} player(s) notified${totalRefundedAmount > 0 ? ` and ₹${totalRefundedAmount} auto-refunded` : ''}.`
+          : '✅ Match marked as cancelled (no joined players needed refund).'
+      );
+    } catch (e: any) {
+      console.error('Error cancelling & refunding match:', e);
+      alert(e?.message || 'Failed to cancel and refund match.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleDeclareResult = (match: Tournament) => {
     setSelectedMatchResults(match);
     setPlayerResults({});
@@ -997,6 +1194,7 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
             slot: player.slot,
             username: player.username,
             ign: player.ign,
+            gameUid: player.gameUid || '',
             rankOrKills: score,
             positionRank: playerPositionResults[playerKey] || null,
             winningAmount,
@@ -2334,7 +2532,7 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                       <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                       <input 
                         type="text"
-                        placeholder="Search username, email, phone, UID or device ID..."
+                        placeholder="Search username, email, phone, IGN, Game UID or device ID..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         className="w-full bg-white border border-slate-200 rounded-2xl py-3.5 pl-11 pr-4 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A] transition-all shadow-2xs"
@@ -2368,18 +2566,26 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                       .filter((u) => {
                         const q = searchTerm.trim().toLowerCase();
                         if (!q) return true;
+                        const allIgns = Object.values(u.gameIGNs || {}).join(' ').toLowerCase();
+                        const allUids = Object.values(u.gameUIDs || {}).join(' ').toLowerCase();
                         return (
                           String(u.username || '').toLowerCase().includes(q) ||
                           String(u.email || '').toLowerCase().includes(q) ||
                           String(u.phone || '').toLowerCase().includes(q) ||
                           String(u.id || '').toLowerCase().includes(q) ||
-                          String(u.deviceId || '').toLowerCase().includes(q)
+                          String(u.deviceId || '').toLowerCase().includes(q) ||
+                          String(u.ign || '').toLowerCase().includes(q) ||
+                          String(u.gameUid || '').toLowerCase().includes(q) ||
+                          allIgns.includes(q) ||
+                          allUids.includes(q)
                         );
                       })
                       .map((u) => {
                       const isDevBlacklisted = Boolean(u.deviceId && blacklistedDevices.some(d => d.deviceId === u.deviceId && d.isActive !== false));
                       const targetRole = resolveUserRole(u);
                       const isProtectedFromStaff = !isAdminUser && targetRole === 'admin';
+                      const userIgn = extractUserIgn(u);
+                      const userGameUid = extractUserGameUid(u);
                       return (
                       <div 
                         key={u.id}
@@ -2413,6 +2619,20 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                               )}
                             </div>
                             <p className="text-[10px] font-semibold text-slate-500 truncate">{u.email}</p>
+                            {(userIgn || userGameUid) && (
+                              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-0.5 text-[9px] font-bold">
+                                {userIgn && (
+                                  <span className="text-slate-700">
+                                    IGN: <strong className="text-slate-900">{userIgn}</strong>
+                                  </span>
+                                )}
+                                {userGameUid && (
+                                  <span className="text-[#16A34A] font-mono">
+                                    UID: <strong>{userGameUid}</strong>
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             {u.deviceInfo && (
                               <p className="text-[9px] text-slate-400 font-medium truncate">
                                 📱 {u.deviceInfo}
@@ -2580,6 +2800,10 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                     { 
                       id: 'completed', 
                       label: `Completed (${matches.filter(m => m.status === 'completed').length})` 
+                    },
+                    { 
+                      id: 'cancelled', 
+                      label: `Cancelled (${matches.filter(m => m.status === 'cancelled').length})` 
                     }
                   ].map((filterItem) => (
                     <button
@@ -2615,6 +2839,9 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                     }
                     if (matchStatusFilter === 'completed') {
                       return m.status === 'completed';
+                    }
+                    if (matchStatusFilter === 'cancelled') {
+                      return m.status === 'cancelled';
                     }
                     return true;
                   })
@@ -2815,11 +3042,11 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                           </div>
                         </div>
 
-                        {/* Action Buttons: Declare Room Modal & Declare Result */}
+                        {/* Action Buttons: Declare Room Modal, Declare Result & View Joined Players */}
                         <div className="grid grid-cols-2 gap-2 mt-4">
                           <button 
                             onClick={() => handleOpenDeclareRoomModal(m)}
-                            className="py-3 bg-[#ECFDF5] hover:bg-emerald-100 border border-[#BBF7D0] text-[#16A34A] rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+                            className="py-3 bg-[#ECFDF5] hover:bg-emerald-100 border border-[#BBF7D0] text-[#16A34A] rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all cursor-pointer"
                           >
                             <Key size={13} />
                             {hasRoomCreds ? 'Edit Room Info' : 'Declare Room'}
@@ -2828,7 +3055,7 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                           {m.status !== 'completed' ? (
                             <button 
                               onClick={() => handleDeclareResult(m)}
-                              className="py-3 bg-[#16A34A] hover:bg-[#15803D] text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow-xs flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+                              className="py-3 bg-[#16A34A] hover:bg-[#15803D] text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow-xs flex items-center justify-center gap-2 active:scale-[0.98] transition-all cursor-pointer"
                             >
                               <Trophy size={13} />
                               Declare Result
@@ -2840,6 +3067,18 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                             </div>
                           )}
                         </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMatchPlayersSearch('');
+                            setViewPlayersMatch(m);
+                          }}
+                          className="w-full mt-2 py-2.5 bg-slate-50 hover:bg-[#ECFDF5] border border-slate-200 hover:border-[#BBF7D0] text-slate-700 hover:text-[#16A34A] rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer"
+                        >
+                          <UsersIcon size={13} />
+                          <span>View Players IGN & UID ({m.playersCount || (m.players || []).length})</span>
+                        </button>
                       </div>
                     );
                   })}
@@ -3714,6 +3953,8 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                    <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Account Details</h4>
                    <div className="space-y-1">
                       <DetailRow label="Username" value={selectedUser.username} />
+                      <DetailRow label="In-Game Name" value={extractUserIgn(selectedUser) || 'Not set'} />
+                      <DetailRow label="In-Game UID" value={extractUserGameUid(selectedUser) || 'Not set'} />
                       <DetailRow label="Email" value={selectedUser.email} />
                       <DetailRow label="Phone" value={selectedUser.phone || 'N/A'} />
                       <DetailRow label="Wallet" value={`₹${(selectedUser.wallet?.deposit || 0) + (selectedUser.wallet?.winnings || 0) + (selectedUser.wallet?.bonus || 0)}`} />
@@ -3760,6 +4001,272 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
+
+      {/* Cancel & Auto-Refund Confirmation Modal */}
+      <AnimatePresence>
+        {cancelRefundModalMatch && (() => {
+          const joinedList = cancelRefundModalMatch.players || [];
+          const uniquePlayerIds = new Set(
+            joinedList.map((p: any) => p?.userId).filter((uid: any) => typeof uid === 'string' && uid.length > 0)
+          );
+          const slotFee = Math.max(0, Number(cancelRefundModalMatch.entryFee || 0));
+          const totalRefundPool = joinedList.length * slotFee;
+          const quickReasons = [
+            'Low players joined / Slots not filled',
+            'Custom room / server technical issue',
+            'Match rescheduled due to maintenance',
+            'Fairplay violation detected'
+          ];
+
+          return (
+            <div
+              className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-[60] flex items-center justify-center p-4"
+              onClick={() => {
+                if (!isProcessing) {
+                  setCancelRefundModalMatch(null);
+                  setCancelReasonInput('');
+                }
+              }}
+            >
+              <motion.div
+                initial={{ scale: 0.94, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.94, opacity: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-md bg-white rounded-3xl p-6 border border-slate-200 shadow-2xl text-slate-900 max-h-[90vh] overflow-y-auto"
+              >
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-center text-amber-600 shrink-0">
+                      <RotateCcw size={22} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-extrabold text-slate-900">Cancel & Auto Refund</h3>
+                      <p className="text-[11px] font-bold text-slate-500">
+                        {cancelRefundModalMatch.displayId || '#000'} • {cancelRefundModalMatch.title}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (!isProcessing) {
+                        setCancelRefundModalMatch(null);
+                        setCancelReasonInput('');
+                      }
+                    }}
+                    className="p-1.5 rounded-xl bg-slate-100 text-slate-500 hover:text-slate-900"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 p-3.5 bg-amber-50/70 border border-amber-200 rounded-2xl mb-4 text-center">
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-wider text-amber-700">Unique Players</p>
+                    <p className="text-sm font-black text-slate-900 tabular-nums mt-0.5">{uniquePlayerIds.size}</p>
+                  </div>
+                  <div className="border-x border-amber-200">
+                    <p className="text-[9px] font-black uppercase tracking-wider text-amber-700">Slots Booked</p>
+                    <p className="text-sm font-black text-slate-900 tabular-nums mt-0.5">{joinedList.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-wider text-amber-700">Total Refund</p>
+                    <p className="text-sm font-black text-[#16A34A] tabular-nums mt-0.5">₹{totalRefundPool}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2.5 mb-5">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600 block">
+                    Cancellation Reason (Sent to all players) *
+                  </label>
+                  <textarea
+                    rows={3}
+                    maxLength={300}
+                    value={cancelReasonInput}
+                    onChange={(e) => setCancelReasonInput(e.target.value)}
+                    placeholder="Write reason why this tournament is cancelled..."
+                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-semibold text-slate-900 placeholder:text-slate-400 outline-none focus:border-amber-500 resize-none"
+                  />
+                  <div className="flex flex-wrap gap-1.5">
+                    {quickReasons.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setCancelReasonInput(preset)}
+                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-amber-50 border border-slate-200 hover:border-amber-300 text-[10px] font-bold text-slate-700 transition-colors cursor-pointer"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-medium text-slate-600 mb-5 leading-relaxed">
+                  All joined players will automatically receive{' '}
+                  <span className="font-bold text-[#16A34A]">
+                    {slotFee > 0 ? `₹${slotFee} per slot in Deposit Wallet` : 'an instant cancellation alert'}
+                  </span>{' '}
+                  and a push + in-app notification with your reason.
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      setCancelRefundModalMatch(null);
+                      setCancelReasonInput('');
+                    }}
+                    disabled={isProcessing}
+                    className="py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-bold uppercase tracking-wider active:scale-95 transition-all"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={processCancelAndRefundMatch}
+                    disabled={isProcessing || !cancelReasonInput.trim()}
+                    className="py-3.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl text-[11px] font-black uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-2 shadow-xs"
+                  >
+                    {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                    <span>Refund & Notify</span>
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
+      </AnimatePresence>
+
+      {/* Cancel & Auto-Refund Confirmation Modal */}
+      <AnimatePresence>
+        {cancelRefundModalMatch && (() => {
+          const joinedList = cancelRefundModalMatch.players || [];
+          const uniquePlayerIds = new Set(
+            joinedList.map((p: any) => p?.userId).filter((uid: any) => typeof uid === 'string' && uid.length > 0)
+          );
+          const slotFee = Math.max(0, Number(cancelRefundModalMatch.entryFee || 0));
+          const totalRefundPool = joinedList.length * slotFee;
+          const quickReasons = [
+            'Low players joined / Slots not filled',
+            'Custom room / server technical issue',
+            'Match rescheduled due to maintenance',
+            'Fairplay violation detected'
+          ];
+
+          return (
+            <div
+              className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-[60] flex items-center justify-center p-4"
+              onClick={() => {
+                if (!isProcessing) {
+                  setCancelRefundModalMatch(null);
+                  setCancelReasonInput('');
+                }
+              }}
+            >
+              <motion.div
+                initial={{ scale: 0.94, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.94, opacity: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-md bg-white rounded-3xl p-6 border border-slate-200 shadow-2xl text-slate-900 max-h-[90vh] overflow-y-auto"
+              >
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-center text-amber-600 shrink-0">
+                      <RotateCcw size={22} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-extrabold text-slate-900">Cancel & Auto Refund</h3>
+                      <p className="text-[11px] font-bold text-slate-500">
+                        {cancelRefundModalMatch.displayId || '#000'} • {cancelRefundModalMatch.title}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (!isProcessing) {
+                        setCancelRefundModalMatch(null);
+                        setCancelReasonInput('');
+                      }
+                    }}
+                    className="p-1.5 rounded-xl bg-slate-100 text-slate-500 hover:text-slate-900"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 p-3.5 bg-amber-50/70 border border-amber-200 rounded-2xl mb-4 text-center">
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-wider text-amber-700">Unique Players</p>
+                    <p className="text-sm font-black text-slate-900 tabular-nums mt-0.5">{uniquePlayerIds.size}</p>
+                  </div>
+                  <div className="border-x border-amber-200">
+                    <p className="text-[9px] font-black uppercase tracking-wider text-amber-700">Slots Booked</p>
+                    <p className="text-sm font-black text-slate-900 tabular-nums mt-0.5">{joinedList.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-wider text-amber-700">Total Refund</p>
+                    <p className="text-sm font-black text-[#16A34A] tabular-nums mt-0.5">₹{totalRefundPool}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2.5 mb-5">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600 block">
+                    Cancellation Reason (Sent to all players) *
+                  </label>
+                  <textarea
+                    rows={3}
+                    maxLength={300}
+                    value={cancelReasonInput}
+                    onChange={(e) => setCancelReasonInput(e.target.value)}
+                    placeholder="Write reason why this tournament is cancelled..."
+                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-semibold text-slate-900 placeholder:text-slate-400 outline-none focus:border-amber-500 resize-none"
+                  />
+                  <div className="flex flex-wrap gap-1.5">
+                    {quickReasons.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setCancelReasonInput(preset)}
+                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-amber-50 border border-slate-200 hover:border-amber-300 text-[10px] font-bold text-slate-700 transition-colors cursor-pointer"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-medium text-slate-600 mb-5 leading-relaxed">
+                  All joined players will automatically receive{' '}
+                  <span className="font-bold text-[#16A34A]">
+                    {slotFee > 0 ? `₹${slotFee} per slot in Deposit Wallet` : 'an instant cancellation alert'}
+                  </span>{' '}
+                  and a push + in-app notification with your reason.
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      setCancelRefundModalMatch(null);
+                      setCancelReasonInput('');
+                    }}
+                    disabled={isProcessing}
+                    className="py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-bold uppercase tracking-wider active:scale-95 transition-all"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={processCancelAndRefundMatch}
+                    disabled={isProcessing || !cancelReasonInput.trim()}
+                    className="py-3.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl text-[11px] font-black uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-2 shadow-xs"
+                  >
+                    {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+                    <span>Refund & Notify</span>
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Declare Result Modal */}
@@ -3836,8 +4343,11 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
                                       <UsersIcon size={16} />
                                    </div>
                                    <div>
-                                     <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-[#16A34A] transition-colors leading-none mb-1">{player.ign}</h4>
-                                     <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">{player.username}</p>
+                                     <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-[#16A34A] transition-colors leading-none mb-1">{player.ign || player.username}</h4>
+                                     <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">
+                                       @{player.username}
+                                       {player.gameUid ? ` • UID: ${player.gameUid}` : ''}
+                                     </p>
                                    </div>
                                 </div>
                                 {totalReward > 0 && (
@@ -3917,6 +4427,103 @@ export default function AdminPage({ user, onPageChange }: AdminPageProps) {
               >
                 {isProcessing ? <Loader2 size={18} className="animate-spin" /> : 'Finalize & Declare Results'}
               </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Match Joined Players (IGN & UID) Modal */}
+      <AnimatePresence>
+        {viewPlayersMatch && (
+          <div
+            className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-[60] flex items-center justify-center p-5"
+            onClick={() => setViewPlayersMatch(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.94, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg bg-white rounded-3xl p-6 border border-slate-200 shadow-2xl max-h-[85vh] flex flex-col text-slate-900"
+            >
+              <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-100">
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">Joined Players (IGN & UID)</h3>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mt-0.5">
+                    {viewPlayersMatch.title} ({(viewPlayersMatch.players || []).length} Players)
+                  </p>
+                </div>
+                <button
+                  onClick={() => setViewPlayersMatch(null)}
+                  className="p-2 rounded-xl bg-slate-100 text-slate-500 hover:text-slate-900 hover:bg-slate-200 transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="relative mb-3">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                <input
+                  type="text"
+                  placeholder="Search player IGN, In-Game UID, username or slot..."
+                  value={matchPlayersSearch}
+                  onChange={(e) => setMatchPlayersSearch(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs font-bold text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#16A34A] focus:bg-white"
+                />
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                {(viewPlayersMatch.players || []).length === 0 ? (
+                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-slate-200">
+                    <UsersIcon size={30} className="mx-auto text-slate-300 mb-2" />
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-500">No players joined yet</p>
+                  </div>
+                ) : (
+                  (viewPlayersMatch.players || [])
+                    .filter((p) => {
+                      const q = matchPlayersSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return (
+                        String(p.ign || '').toLowerCase().includes(q) ||
+                        String(p.gameUid || '').toLowerCase().includes(q) ||
+                        String(p.username || '').toLowerCase().includes(q) ||
+                        String(p.slot || '').includes(q)
+                      );
+                    })
+                    .map((player, idx) => {
+                      const fallbackUser = users.find((u) => u.id === player.userId);
+                      const resolvedUid = player.gameUid || (fallbackUser ? extractUserGameUid(fallbackUser) : '');
+                      return (
+                        <div
+                          key={`${player.userId}_${player.slot ?? idx}`}
+                          onClick={() => {
+                            if (player.userId) {
+                              setViewPlayersMatch(null);
+                              onPageChange(Page.ADMIN_USER_PROFILE, player.userId);
+                            }
+                          }}
+                          className="p-3 bg-slate-50 hover:bg-[#ECFDF5]/50 border border-slate-200 rounded-2xl flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-[#ECFDF5] border border-[#BBF7D0] text-[#16A34A] flex items-center justify-center text-xs font-black tabular-nums shrink-0">
+                              #{player.slot || idx + 1}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-extrabold text-slate-900 truncate">{player.ign || player.username || 'Player'}</p>
+                              <p className="text-[10px] font-semibold text-slate-500 truncate">@{player.username || 'user'}</p>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-[8px] font-black uppercase text-slate-400 tracking-wider">In-Game UID</p>
+                            <p className="text-xs font-black font-mono text-[#16A34A] select-all">
+                              {resolvedUid || <span className="text-slate-400 font-sans font-medium">Not set</span>}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
             </motion.div>
           </div>
         )}

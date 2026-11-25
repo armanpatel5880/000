@@ -74,6 +74,22 @@ export function extractUserIgn(uData: any): string {
   return typeof alt === 'string' ? alt.trim() : '';
 }
 
+export function extractUserGameUid(uData: any): string {
+  if (!uData) return '';
+  if (typeof uData.gameUid === 'string' && uData.gameUid.trim()) return uData.gameUid.trim();
+  if (uData.gameUIDs && typeof uData.gameUIDs === 'object') {
+    if (typeof uData.gameUIDs.freefire === 'string' && uData.gameUIDs.freefire.trim()) {
+      return uData.gameUIDs.freefire.trim();
+    }
+    const firstUid = Object.values(uData.gameUIDs).find(
+      (v) => typeof v === 'string' && v.trim().length > 0
+    ) as string | undefined;
+    if (firstUid) return firstUid.trim();
+  }
+  const alt = uData.freefireUID || uData.bgmiUID || uData.codmUID || '';
+  return typeof alt === 'string' ? alt.trim() : '';
+}
+
 export async function fetchRegistrationIgnFallback(userId: string): Promise<string> {
   if (!userId || !auth.currentUser) return '';
   try {

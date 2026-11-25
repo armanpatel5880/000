@@ -375,6 +375,17 @@ export default function NotificationsModal({
                       </div>
                     )}
 
+                    {item.imageUrl && (
+                      <div className="mb-3 rounded-xl overflow-hidden border border-slate-200 max-h-40 bg-slate-50">
+                        <SafeImage 
+                          src={item.imageUrl} 
+                          alt={item.title || 'Notification Attachment'}
+                          className="w-full h-36"
+                          imgClassName="w-full h-36 object-cover"
+                        />
+                      </div>
+                    )}
+
                     <div className="flex items-start gap-3">
                       <div className={`w-8 h-8 rounded-xl border flex items-center justify-center shrink-0 ${style.color}`}>
                         <Icon size={16} />
@@ -397,16 +408,6 @@ export default function NotificationsModal({
                         <p className="text-[11px] text-slate-600 leading-relaxed font-normal mt-1 whitespace-pre-line">
                           {item.message}
                         </p>
-
-                        {item.imageUrl && (
-                          <div className="mt-2.5 rounded-xl overflow-hidden border border-slate-200 max-h-36">
-                            <SafeImage 
-                              src={item.imageUrl} 
-                              alt="Notification Attachment"
-                              className="w-full h-full object-cover"
-                            />
-                          </div>
-                        )}
 
                         {item.targetMatchTitle && (
                           <div className="mt-2 text-[9px] font-bold text-[#16A34A] bg-[#ECFDF5] px-2 py-1 rounded-lg border border-[#BBF7D0] inline-block">

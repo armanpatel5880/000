@@ -27,14 +27,39 @@ export default defineConfig(({ mode }) => {
         manifest: {
           id: '/',
           name: 'AP Tournament',
-          short_name: 'AP Tournament',
+          short_name: 'AP Tourney',
           description: 'Join daily Free Fire custom room matches, CS tournaments, and earn instant cash rewards on AP Tournament.',
+          lang: 'en',
+          dir: 'ltr',
           theme_color: '#16A34A',
           background_color: '#FFFFFF',
           display: 'standalone',
+          display_override: ['standalone', 'minimal-ui'],
           orientation: 'portrait',
           start_url: '/',
           scope: '/',
+          prefer_related_applications: false,
+          categories: ['games', 'entertainment', 'sports'],
+          shortcuts: [
+            {
+              name: 'Tournaments',
+              short_name: 'Matches',
+              url: '/tournaments',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }]
+            },
+            {
+              name: 'My Wallet',
+              short_name: 'Wallet',
+              url: '/wallet',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }]
+            },
+            {
+              name: 'My Profile',
+              short_name: 'Profile',
+              url: '/profile',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }]
+            }
+          ],
           icons: [
             {
               src: '/pwa-192x192.png',
@@ -65,7 +90,7 @@ export default defineConfig(({ mode }) => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           globIgnores: ['**/assets/aistudio/**'],
           navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//],
+          navigateFallbackDenylist: [/^\/api\//, /^\/\.well-known\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -98,7 +123,7 @@ export default defineConfig(({ mode }) => {
           ]
         },
         devOptions: {
-          enabled: false,
+          enabled: true,
           type: 'classic'
         }
       })

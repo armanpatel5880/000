@@ -1,0 +1,30 @@
+{
+  "appId": "com.aptournament.app",
+  "appName": "AP Tournament",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "backgroundColor": "#F2FBF6",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "backgroundColor": "#FFFFFF",
+      "showSpinner": false
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_notification",
+      "iconColor": "#16A34A"
+    }
+  }
+}

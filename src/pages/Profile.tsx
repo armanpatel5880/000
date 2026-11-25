@@ -19,8 +19,17 @@ import SupportModal from '../components/SupportModal';
 import RulesModal from '../components/RulesModal';
 import MyOrdersModal from '../components/MyOrdersModal';
 import SafeImage, { APP_LOGO_CIRCLE } from '../components/SafeImage';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import { auth } from '../lib/firebase';
 import { countEnabledStaffPermissions, hasAdminPanelAccess, isFullAdmin } from '../utils/adminPermissions';
+import {
+  arePushNotificationsLocallyEnabled,
+  getNotificationPermissionState,
+  NotificationPermissionState,
+  requestMobileNotificationPermission,
+  setPushNotificationsPreference,
+  triggerMobileStatusBarNotification
+} from '../utils/mobileNotificationHelper';
 
 interface ProfilePageProps {
   user: User;
@@ -33,16 +42,59 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
+  const [showNotifBlockedModal, setShowNotifBlockedModal] = useState(false);
+  const [isRequestingNotif, setIsRequestingNotif] = useState(false);
+  const [testAlertSent, setTestAlertSent] = useState(false);
+  const [permState, setPermState] = useState<NotificationPermissionState>(() =>
+    getNotificationPermissionState()
+  );
   const [pushEnabled, setPushEnabled] = useState(() => {
-    return localStorage.getItem('khelgalli_push_notifications') !== 'false';
+    const p = getNotificationPermissionState();
+    if (p === 'denied') return false;
+    return arePushNotificationsLocallyEnabled() && user?.notificationsEnabled !== false;
   });
 
-  const handleTogglePush = () => {
-    setPushEnabled((prev) => {
-      const next = !prev;
-      localStorage.setItem('khelgalli_push_notifications', String(next));
-      return next;
-    });
+  const handleTogglePush = async () => {
+    if (isRequestingNotif) return;
+
+    const currentPerm = getNotificationPermissionState();
+    setPermState(currentPerm);
+
+    if (!pushEnabled || currentPerm !== 'granted') {
+      if (currentPerm === 'denied') {
+        setShowNotifBlockedModal(true);
+        return;
+      }
+      setIsRequestingNotif(true);
+      try {
+        const result = await requestMobileNotificationPermission(user?.id);
+        setPermState(result);
+        if (result === 'granted') {
+          setPushEnabled(true);
+          await setPushNotificationsPreference(true, user?.id);
+        } else if (result === 'denied') {
+          setPushEnabled(false);
+          setShowNotifBlockedModal(true);
+        }
+      } finally {
+        setIsRequestingNotif(false);
+      }
+      return;
+    }
+
+    setPushEnabled(false);
+    await setPushNotificationsPreference(false, user?.id);
+  };
+
+  const handleSendTestAlert = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await triggerMobileStatusBarNotification(
+      'AP Tournament • Notifications Working!',
+      'You will receive live Room ID, Password, and match start alerts on your device.',
+      { tag: 'profile-test-alert' }
+    );
+    setTestAlertSent(true);
+    setTimeout(() => setTestAlertSent(false), 3000);
   };
 
   const isAdminUser = isFullAdmin(user, auth.currentUser?.email, auth.currentUser?.uid);
@@ -185,31 +237,55 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
               </button>
             )}
 
-            {/* Card 1: Push Notification */}
-            <div className="bg-white rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-slate-200 shadow-2xs">
-              <div className="flex items-center gap-3.5">
-                <div className="text-[#16A34A]">
+            {/* Android App Install Card (Automatically hides when installed) */}
+            <PWAInstallButton variant="card" />
+
+            {/* Card 1: Push Notification with Real Android/Browser Permission */}
+            <div className="bg-white rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between gap-3 border border-slate-200 shadow-2xs">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="text-[#16A34A] shrink-0">
                   <Bell size={20} />
                 </div>
-                <span className="text-sm font-bold text-slate-900 tracking-tight">
-                  Push Notification
-                </span>
+                <div className="min-w-0">
+                  <span className="text-sm font-bold text-slate-900 tracking-tight block">
+                    Push Notification
+                  </span>
+                  <span className="text-[10px] font-semibold text-slate-500 block truncate">
+                    {permState === 'denied'
+                      ? 'Blocked in Device Settings — Tap to fix'
+                      : permState === 'granted' && pushEnabled
+                      ? 'Permission Allowed · Match alerts active'
+                      : 'Tap switch to allow Android notifications'}
+                  </span>
+                </div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={pushEnabled}
-                onClick={handleTogglePush}
-                className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-300 cursor-pointer ${
-                  pushEnabled ? 'bg-[#16A34A]' : 'bg-slate-300'
-                }`}
-              >
-                <div
-                  className={`bg-white w-4 h-4 rounded-full shadow-xs transform transition-transform duration-300 ${
-                    pushEnabled ? 'translate-x-5' : 'translate-x-0'
+              <div className="flex items-center gap-2 shrink-0">
+                {permState === 'granted' && pushEnabled && (
+                  <button
+                    type="button"
+                    onClick={handleSendTestAlert}
+                    className="px-2.5 py-1 rounded-lg bg-[#ECFDF5] border border-[#BBF7D0] text-[#16A34A] text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-emerald-100 transition-colors"
+                  >
+                    {testAlertSent ? 'Sent!' : 'Test'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={pushEnabled && permState === 'granted'}
+                  disabled={isRequestingNotif}
+                  onClick={handleTogglePush}
+                  className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-300 cursor-pointer disabled:opacity-60 ${
+                    pushEnabled && permState === 'granted' ? 'bg-[#16A34A]' : 'bg-slate-300'
                   }`}
-                />
-              </button>
+                >
+                  <div
+                    className={`bg-white w-4 h-4 rounded-full shadow-xs transform transition-transform duration-300 ${
+                      pushEnabled && permState === 'granted' ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
 
              {/* Card 2: My Profile */}
@@ -484,6 +560,48 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
                   Yes, Log Out
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Notification Permission Blocked Helper Modal */}
+      <AnimatePresence>
+        {showNotifBlockedModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowNotifBlockedModal(false)}
+              className="absolute inset-0 bg-slate-900/50 backdrop-blur-xs"
+            />
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative w-full max-w-sm bg-white border border-slate-200 rounded-2xl p-6 shadow-xl z-10"
+            >
+              <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-3 border border-amber-200">
+                <Bell size={22} />
+              </div>
+              <h3 className="text-base font-bold text-slate-900 text-center mb-1.5">
+                Enable Notification Permission
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed mb-4">
+                Notifications are currently blocked by your Android device or browser settings:
+              </p>
+              <ol className="text-xs text-slate-700 space-y-2 mb-5 list-decimal pl-4 font-medium">
+                <li>Tap the <strong>Lock / Site Settings</strong> icon near the top bar (or open Android <strong>Settings &gt; Apps &gt; AP Tournament</strong>).</li>
+                <li>Open <strong>Permissions &gt; Notifications</strong> and switch it to <strong>Allow</strong>.</li>
+                <li>Reload the app to receive instant Room ID & Password alerts.</li>
+              </ol>
+              <button
+                type="button"
+                onClick={() => setShowNotifBlockedModal(false)}
+                className="w-full min-h-[44px] py-2.5 bg-[#16A34A] hover:bg-[#15803D] text-white font-bold text-xs rounded-xl transition-colors shadow-xs cursor-pointer"
+              >
+                Got It
+              </button>
             </motion.div>
           </div>
         )}

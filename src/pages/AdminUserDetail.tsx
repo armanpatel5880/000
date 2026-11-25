@@ -18,8 +18,8 @@ import {
   serverTimestamp,
   writeBatch
 } from 'firebase/firestore';
-import { ChevronLeft, Shield, ShieldAlert, Wallet as WalletIcon, Trophy, History, Plus, Minus, User as UserIcon, Mail, Phone, Smartphone, Ban, Unlock, AlertTriangle, X, Check, Lock, Calendar, Clock } from 'lucide-react';
-import { extractUserIgn, fetchRegistrationIgnFallback } from '../utils/deviceHelper';
+import { ChevronLeft, Shield, ShieldAlert, Wallet as WalletIcon, Trophy, History, Plus, Minus, User as UserIcon, Mail, Phone, Smartphone, Ban, Unlock, AlertTriangle, X, Check, Lock, Calendar, Clock, Gamepad2, Hash } from 'lucide-react';
+import { extractUserIgn, extractUserGameUid, fetchRegistrationIgnFallback } from '../utils/deviceHelper';
 import { formatUserDateTime } from '../utils/dateUtils';
 import {
   DEFAULT_STAFF_PERMISSIONS,
@@ -58,6 +58,7 @@ export default function AdminUserDetail({ user, onPageChange }: AdminUserDetailP
   const [unbanDeviceChecked, setUnbanDeviceChecked] = useState(true);
   const [isDeviceBlacklisted, setIsDeviceBlacklisted] = useState(false);
   const [isBanProcessing, setIsBanProcessing] = useState(false);
+  const [regProfileFallback, setRegProfileFallback] = useState<{ ign: string; gameUid: string }>({ ign: '', gameUid: '' });
 
   useEffect(() => {
     if (!userId || !canManageUsers) {
@@ -91,7 +92,17 @@ export default function AdminUserDetail({ user, onPageChange }: AdminUserDetailP
       try {
         const qReg = query(collection(db, 'registrations'), where('userId', '==', userId));
         const regSnap = await getDocs(qReg);
-        const matchIds = regSnap.docs.map(d => d.data().tournamentId);
+        const regDocs = regSnap.docs.map(d => d.data());
+        let fallbackIgn = '';
+        let fallbackGameUid = '';
+        for (const r of regDocs) {
+          if (!fallbackIgn && typeof r.ign === 'string' && r.ign.trim()) fallbackIgn = r.ign.trim();
+          if (!fallbackGameUid && typeof r.gameUid === 'string' && r.gameUid.trim()) fallbackGameUid = r.gameUid.trim();
+          if (fallbackIgn && fallbackGameUid) break;
+        }
+        setRegProfileFallback({ ign: fallbackIgn, gameUid: fallbackGameUid });
+
+        const matchIds = regDocs.map(d => d.tournamentId);
         
         if (matchIds.length > 0) {
           const qMatches = query(
@@ -396,6 +407,55 @@ export default function AdminUserDetail({ user, onPageChange }: AdminUserDetailP
               </div>
             </div>
           </div>
+          {/* In-Game Profile (IGN & UID) */}
+          {(() => {
+            const primaryIgn = extractUserIgn(userData) || regProfileFallback.ign;
+            const primaryUid = extractUserGameUid(userData) || regProfileFallback.gameUid;
+            const perGameEntries = [
+              { label: 'Free Fire', ign: userData.gameIGNs?.freefire || userData.ign || '', uid: userData.gameUIDs?.freefire || userData.gameUid || '' },
+              { label: 'BGMI', ign: userData.gameIGNs?.bgmi || '', uid: userData.gameUIDs?.bgmi || '' },
+              { label: 'COD Mobile', ign: userData.gameIGNs?.codm || '', uid: userData.gameUIDs?.codm || '' }
+            ].filter((g) => g.ign || g.uid);
+
+            return (
+              <div className="p-3.5 bg-[#ECFDF5]/60 rounded-2xl border border-[#BBF7D0] space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <Gamepad2 size={15} className="text-[#16A34A]" />
+                  <p className="text-[9px] font-black uppercase text-[#15803D] tracking-widest">
+                    In-Game Profile (IGN & UID)
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="bg-white rounded-xl p-2.5 border border-emerald-100">
+                    <p className="text-[8px] font-black uppercase text-slate-500 tracking-widest">In-Game Name (IGN)</p>
+                    <p className="text-xs font-extrabold text-slate-900 mt-0.5 truncate select-all">
+                      {primaryIgn || <span className="text-slate-400 italic font-medium">Not set</span>}
+                    </p>
+                  </div>
+                  <div className="bg-white rounded-xl p-2.5 border border-emerald-100">
+                    <p className="text-[8px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-1">
+                      <Hash size={10} className="text-[#16A34A]" /> In-Game UID
+                    </p>
+                    <p className="text-xs font-black font-mono text-[#16A34A] mt-0.5 truncate select-all">
+                      {primaryUid || <span className="text-slate-400 italic font-sans font-medium">Not set</span>}
+                    </p>
+                  </div>
+                </div>
+                {perGameEntries.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5">
+                    {perGameEntries.map((g) => (
+                      <div key={g.label} className="bg-white/90 rounded-xl px-2.5 py-2 border border-slate-200 text-[10px]">
+                        <p className="text-[8px] font-black uppercase text-slate-500 tracking-wider mb-0.5">{g.label}</p>
+                        <p className="font-bold text-slate-900 truncate">IGN: {g.ign || '—'}</p>
+                        <p className="font-bold font-mono text-[#16A34A] truncate">UID: {g.uid || '—'}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           <div className={`flex items-center justify-between gap-3 p-3.5 rounded-2xl border ${isDeviceBlacklisted ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
             <div className="flex items-center gap-3 min-w-0">
               <Smartphone size={16} className={isDeviceBlacklisted ? 'text-red-600 shrink-0' : 'text-[#16A34A] shrink-0'} />

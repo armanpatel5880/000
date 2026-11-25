@@ -27,6 +27,8 @@ import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, onSnapshot, getDoc, runTransaction, updateDoc } from 'firebase/firestore';
 import SafeImage from '../components/SafeImage';
 import { getMatchRemainingTime } from '../utils/matchAlertHelper';
+import { hasSectionPermission } from '../utils/adminPermissions';
+import { extractUserGameUid } from '../utils/deviceHelper';
 
 interface MatchDetailsProps {
   user: User | null;
@@ -99,14 +101,17 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [editingSlotKey, setEditingSlotKey] = useState<string | null>(null);
   const [editingIgnValue, setEditingIgnValue] = useState('');
+  const [editingUidValue, setEditingUidValue] = useState('');
   const [savingIgn, setSavingIgn] = useState(false);
   const [ignEditError, setIgnEditError] = useState<string | null>(null);
   const [ignEditSuccess, setIgnEditSuccess] = useState<string | null>(null);
+  const [resolvedUserGameUids, setResolvedUserGameUids] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!showAllJoiningsModal) {
       setEditingSlotKey(null);
       setEditingIgnValue('');
+      setEditingUidValue('');
       setIgnEditError(null);
       setIgnEditSuccess(null);
       return;
@@ -117,6 +122,78 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
     }, 10000);
     return () => clearInterval(timer);
   }, [showAllJoiningsModal]);
+
+  useEffect(() => {
+    if (!showAllJoiningsModal || !matchData?.players || matchData.players.length === 0) return;
+    const authEmail = auth.currentUser?.email;
+    const authUid = auth.currentUser?.uid;
+    const canLookupOtherUsers =
+      hasSectionPermission(user, 'matches', authEmail, authUid) ||
+      hasSectionPermission(user, 'usersAndBlacklist', authEmail, authUid);
+
+    if (!canLookupOtherUsers) return;
+
+    const missingUserIds: string[] = Array.from(
+      new Set<string>(
+        matchData.players
+          .filter((p) => Boolean(p.userId) && !p.gameUid && !resolvedUserGameUids[p.userId])
+          .map((p) => String(p.userId))
+      )
+    );
+
+    if (missingUserIds.length === 0) return;
+
+    let cancelled = false;
+    const gameKey = (() => {
+      const g = (matchData.gameId || '').toLowerCase();
+      const s = (matchData.section || '').toLowerCase();
+      if (g.includes('freefire') || s.includes('battle royale') || s.includes('clash squad') || s.includes('lone wolf')) return 'freefire';
+      if (g.includes('cod') || g.includes('call of duty')) return 'codm';
+      if (g.includes('bgmi') || g.includes('pubg')) return 'bgmi';
+      return g || 'freefire';
+    })();
+
+    const resolveUids = async () => {
+      const fetched: Record<string, string> = {};
+      await Promise.all(
+        missingUserIds.slice(0, 50).map(async (uid) => {
+          try {
+            const regSnap = await getDoc(doc(db, 'registrations', `${matchId}_${uid}`));
+            if (regSnap.exists()) {
+              const rData = regSnap.data() as any;
+              if (typeof rData.gameUid === 'string' && rData.gameUid.trim()) {
+                fetched[uid] = rData.gameUid.trim();
+                return;
+              }
+            }
+          } catch {
+            // ignore registration lookup error
+          }
+          try {
+            const userSnap = await getDoc(doc(db, 'users', uid));
+            if (userSnap.exists()) {
+              const uData = userSnap.data() as any;
+              const gameSpecificUid = uData.gameUIDs?.[gameKey] || extractUserGameUid(uData);
+              if (gameSpecificUid) {
+                fetched[uid] = gameSpecificUid;
+              }
+            }
+          } catch {
+            // ignore user lookup error
+          }
+        })
+      );
+
+      if (!cancelled && Object.keys(fetched).length > 0) {
+        setResolvedUserGameUids((prev) => ({ ...prev, ...fetched }));
+      }
+    };
+
+    resolveUids();
+    return () => {
+      cancelled = true;
+    };
+  }, [showAllJoiningsModal, matchId, matchData, user]);
 
   useEffect(() => {
     if (!matchData) return;
@@ -218,6 +295,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
   const isJoined = joinedMatchIds.includes(matchId) || (matchData.players && currentUid && matchData.players.some(p => p.userId === currentUid));
   const isOngoing = matchData.status === 'ongoing';
   const isCompleted = matchData.status === 'completed';
+  const isCancelled = matchData.status === 'cancelled';
 
   const matchStartTimestamp = matchData.time ? new Date(matchData.time).getTime() : NaN;
   const hasValidMatchTime = !isNaN(matchStartTimestamp);
@@ -237,32 +315,52 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
     return g || 'freefire';
   };
 
-  const handleStartEditIgn = (player: { ign?: string; slot?: number }, slotKey: string) => {
+  const activeGameKey = getGameKey(matchData.gameId, matchData.section);
+
+  const resolvePlayerUid = (player: { userId?: string; gameUid?: string }) => {
+    if (player.gameUid && player.gameUid.trim()) return player.gameUid.trim();
+    if (player.userId && currentUid && player.userId === currentUid) {
+      const ownUid = user?.gameUIDs?.[activeGameKey] || user?.gameUid || '';
+      if (ownUid.trim()) return ownUid.trim();
+    }
+    if (player.userId && resolvedUserGameUids[player.userId]) {
+      return resolvedUserGameUids[player.userId];
+    }
+    return '';
+  };
+
+  const handleStartEditIgn = (player: { userId?: string; ign?: string; gameUid?: string; slot?: number }, slotKey: string) => {
     setIgnEditError(null);
     setIgnEditSuccess(null);
     if (!canEditIgn) {
-      setIgnEditError('In-Game Name can only be changed up to 10 minutes before match start.');
+      setIgnEditError('In-Game Name & UID can only be changed up to 10 minutes before match start.');
       return;
     }
     setEditingSlotKey(slotKey);
     setEditingIgnValue(player.ign || '');
+    setEditingUidValue(resolvePlayerUid(player));
   };
 
-  const handleSaveIgn = async (targetPlayer: { userId?: string; ign?: string; slot?: number }) => {
+  const handleSaveIgn = async (targetPlayer: { userId?: string; ign?: string; gameUid?: string; slot?: number }) => {
     if (savingIgn || !currentUid || !matchId) return;
-    const trimmed = editingIgnValue.trim();
-    if (!trimmed) {
+    const trimmedIgn = editingIgnValue.trim();
+    const trimmedUid = editingUidValue.trim();
+    if (!trimmedIgn) {
       setIgnEditError('Please enter a valid In-Game Name.');
       return;
     }
-    if (trimmed.length > 50) {
-      setIgnEditError('In-Game Name must be 50 characters or less.');
+    if (!trimmedUid) {
+      setIgnEditError('Please enter a valid In-Game UID.');
+      return;
+    }
+    if (trimmedIgn.length > 50 || trimmedUid.length > 50) {
+      setIgnEditError('In-Game Name and UID must be 50 characters or less.');
       return;
     }
 
     const freshStartMs = matchData.time ? new Date(matchData.time).getTime() : NaN;
     if (!isNaN(freshStartMs) && freshStartMs - Date.now() <= 10 * 60 * 1000) {
-      setIgnEditError('Time limit passed: IGN can only be changed up to 10 minutes before match start.');
+      setIgnEditError('Time limit passed: IGN & UID can only be changed up to 10 minutes before match start.');
       setEditingSlotKey(null);
       setNowMs(Date.now());
       return;
@@ -290,12 +388,12 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
         const liveMatch = matchSnap.data() as Tournament;
         const liveStatus = (liveMatch.status || 'upcoming') as string;
         if (liveStatus === 'completed' || liveStatus === 'ongoing' || liveStatus === 'cancelled') {
-          throw new Error('IGN cannot be changed after match has started or completed.');
+          throw new Error('IGN & UID cannot be changed after match has started or completed.');
         }
 
         const liveStartMs = liveMatch.time ? new Date(liveMatch.time).getTime() : NaN;
         if (!isNaN(liveStartMs) && liveStartMs - Date.now() <= 10 * 60 * 1000) {
-          throw new Error('Time limit passed: IGN can only be changed up to 10 minutes before match start.');
+          throw new Error('Time limit passed: IGN & UID can only be changed up to 10 minutes before match start.');
         }
 
         const livePlayers = Array.isArray(liveMatch.players) ? [...liveMatch.players] : [];
@@ -317,7 +415,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
         editedPrimarySlot = slotOrderIndex <= 0;
 
         const updatedPlayers = livePlayers.map((p, i) =>
-          i === targetIndex ? { ...p, ign: trimmed } : p
+          i === targetIndex ? { ...p, ign: trimmedIgn, gameUid: trimmedUid } : p
         );
 
         transaction.update(matchRef, {
@@ -334,11 +432,12 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
 
           const regUpdates: Record<string, any> = {};
           if (resolvedMemberIdx === 0) {
-            regUpdates.ign = trimmed;
+            regUpdates.ign = trimmedIgn;
+            regUpdates.gameUid = trimmedUid;
           }
           if (Array.isArray(regData.teamMembers) && regData.teamMembers[resolvedMemberIdx]) {
             regUpdates.teamMembers = regData.teamMembers.map((m: any, idx: number) =>
-              idx === resolvedMemberIdx ? { ...m, name: trimmed } : m
+              idx === resolvedMemberIdx ? { ...m, name: trimmedIgn, gameUid: trimmedUid } : m
             );
           }
 
@@ -351,18 +450,21 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
       if (editedPrimarySlot) {
         const gameKey = getGameKey(matchData.gameId, matchData.section);
         updateDoc(doc(db, 'users', currentUid), {
-          [`gameIGNs.${gameKey}`]: trimmed,
-          ign: trimmed
+          [`gameIGNs.${gameKey}`]: trimmedIgn,
+          ign: trimmedIgn,
+          [`gameUIDs.${gameKey}`]: trimmedUid,
+          gameUid: trimmedUid
         }).catch(() => {});
       }
 
       setEditingSlotKey(null);
       setEditingIgnValue('');
-      setIgnEditSuccess('In-Game Name updated successfully!');
+      setEditingUidValue('');
+      setIgnEditSuccess('In-Game Name & UID updated successfully!');
       setTimeout(() => setIgnEditSuccess(null), 3000);
     } catch (err: any) {
-      console.error('Failed to update IGN:', err);
-      setIgnEditError(err?.message || 'Could not update In-Game Name. Please try again.');
+      console.error('Failed to update IGN & UID:', err);
+      setIgnEditError(err?.message || 'Could not update In-Game Name & UID. Please try again.');
     } finally {
       setSavingIgn(false);
     }
@@ -496,9 +598,10 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
   const filteredPlayers = players.filter((p) => {
     if (!joiningsSearch) return true;
     const term = joiningsSearch.toLowerCase();
+    const resolvedUid = resolvePlayerUid(p).toLowerCase();
     return (
-      (p.username && p.username.toLowerCase().includes(term)) ||
       (p.ign && p.ign.toLowerCase().includes(term)) ||
+      (resolvedUid && resolvedUid.includes(term)) ||
       (p.slot && String(p.slot).includes(term))
     );
   });
@@ -533,8 +636,26 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
 
       {/* Main Scrollable Content */}
       <div className="p-4 space-y-4">
+        {isCancelled && (
+          <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex items-start gap-3 shadow-sm">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-700 shrink-0">
+              <AlertCircle size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h4 className="text-xs sm:text-sm font-black text-amber-800 uppercase tracking-tight">
+                Match Cancelled & Auto Refunded
+              </h4>
+              <p className="text-xs text-amber-900 font-semibold mt-1 leading-relaxed">
+                {matchData.cancelReason
+                  ? `Reason: ${matchData.cancelReason}`
+                  : 'This match was cancelled by the admin. Entry fees have been refunded to all joined players.'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* 15-Minute Imminent Match Alert Banner */}
-        {isJoined && (() => {
+        {!isCancelled && isJoined && (() => {
           const status = getMatchRemainingTime(matchData?.time);
           if (status.is15MinWindow) {
             return (
@@ -757,7 +878,21 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
 
       {/* STICKY BOTTOM JOIN MATCH ACTION AREA */}
       <div className="fixed bottom-0 inset-x-0 max-w-lg mx-auto p-4 bg-white/95 backdrop-blur-md border-t border-slate-200 shadow-[0_-4px_20px_rgba(15,23,42,0.06)] z-40">
-        {isCompleted ? (
+        {isCancelled ? (
+          <div className="space-y-1.5 text-center">
+            {matchData.cancelReason && (
+              <p className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 truncate">
+                Cancelled: {matchData.cancelReason}
+              </p>
+            )}
+            <button
+              disabled
+              className="w-full py-3.5 bg-amber-50 text-amber-700 rounded-xl font-black text-sm uppercase tracking-wider cursor-not-allowed border border-amber-200"
+            >
+              MATCH CANCELLED & REFUNDED
+            </button>
+          </div>
+        ) : isCompleted ? (
           <button
             disabled
             className="w-full py-3.5 bg-slate-100 text-slate-400 rounded-xl font-black text-sm uppercase tracking-wider cursor-not-allowed border border-slate-200"
@@ -863,7 +998,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search player name, IGN, or slot #..."
+                  placeholder="Search by IGN, UID, or slot #..."
                   value={joiningsSearch}
                   onChange={(e) => setJoiningsSearch(e.target.value)}
                   className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-[#16A34A] focus:bg-white"
@@ -879,8 +1014,8 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                   {canEditIgn ? <Clock size={13} className="shrink-0" /> : <Lock size={13} className="shrink-0" />}
                   <span>
                     {canEditIgn
-                      ? 'You can change your In-Game Name up to 10 minutes before match start.'
-                      : 'In-Game Name editing is locked (within 10 mins of match start or match started).'}
+                      ? 'You can change your In-Game Name & UID up to 10 minutes before match start.'
+                      : 'In-Game Name & UID editing is locked (within 10 mins of match start or match started).'}
                   </span>
                 </div>
               )}
@@ -915,6 +1050,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                     const isOwnPlayer = Boolean(currentUid && player.userId === currentUid);
                     const slotKey = `${player.userId || 'player'}_${player.slot ?? idx}`;
                     const isEditingThisRow = editingSlotKey === slotKey;
+                    const displayGameUid = resolvePlayerUid(player);
 
                     return (
                       <div key={slotKey} className="text-xs bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-2">
@@ -925,10 +1061,13 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                             </div>
                             <div className="min-w-0">
                               <p className="font-extrabold text-slate-900 leading-tight truncate">
-                                {player.ign || player.username || 'Gamer'}
+                                {player.ign || 'IGN Not Set'}
                               </p>
                               <p className="text-[10px] font-semibold text-slate-500 truncate">
-                                {player.username ? `@${player.username}` : `Player ${idx + 1}`}
+                                {'UID: '}
+                                <span className={displayGameUid ? 'font-mono font-bold text-[#16A34A] select-all' : 'italic text-slate-400'}>
+                                  {displayGameUid || 'Not set'}
+                                </span>
                               </p>
                             </div>
                           </div>
@@ -940,7 +1079,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                                   type="button"
                                   onClick={() => handleStartEditIgn(player, slotKey)}
                                   className="px-2 py-1 rounded-md bg-white hover:bg-[#ECFDF5] border border-[#BBF7D0] text-[#16A34A] text-[9px] font-black uppercase tracking-wider flex items-center gap-1 transition-colors cursor-pointer"
-                                  title="Edit In-Game Name"
+                                  title="Edit In-Game Name & UID"
                                 >
                                   <Edit2 size={10} />
                                   <span>Edit</span>
@@ -948,7 +1087,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                               ) : (
                                 <span
                                   className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-500 text-[9px] font-bold uppercase flex items-center gap-1"
-                                  title="IGN editing closes 10 minutes before match start"
+                                  title="IGN & UID editing closes 10 minutes before match start"
                                 >
                                   <Lock size={9} />
                                   <span>Locked</span>
@@ -967,38 +1106,56 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                               e.preventDefault();
                               handleSaveIgn(player);
                             }}
-                            className="flex items-center gap-1.5 pt-2 border-t border-slate-200"
+                            className="pt-2 border-t border-slate-200 space-y-2"
                           >
-                            <input
-                              type="text"
-                              value={editingIgnValue}
-                              onChange={(e) => setEditingIgnValue(e.target.value)}
-                              placeholder="Enter new In-Game Name"
-                              maxLength={50}
-                              autoFocus
-                              disabled={savingIgn}
-                              className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-slate-300 focus:border-[#16A34A] rounded-lg text-xs font-bold text-slate-900 outline-none"
-                            />
-                            <button
-                              type="submit"
-                              disabled={savingIgn || !editingIgnValue.trim()}
-                              className="px-2.5 py-1.5 bg-[#16A34A] hover:bg-[#15803D] disabled:opacity-50 text-white rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                            >
-                              {savingIgn ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                              <span>Save</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={savingIgn}
-                              onClick={() => {
-                                setEditingSlotKey(null);
-                                setIgnEditError(null);
-                              }}
-                              className="p-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-500 hover:text-slate-800 rounded-lg transition-colors cursor-pointer shrink-0"
-                              aria-label="Cancel edit"
-                            >
-                              <X size={13} />
-                            </button>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                              <div>
+                                <label className="text-[9px] font-black uppercase text-slate-500 block mb-0.5">In-Game Name</label>
+                                <input
+                                  type="text"
+                                  value={editingIgnValue}
+                                  onChange={(e) => setEditingIgnValue(e.target.value)}
+                                  placeholder="Enter new In-Game Name"
+                                  maxLength={50}
+                                  autoFocus
+                                  disabled={savingIgn}
+                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-300 focus:border-[#16A34A] rounded-lg text-xs font-bold text-slate-900 outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-black uppercase text-slate-500 block mb-0.5">In-Game UID</label>
+                                <input
+                                  type="text"
+                                  value={editingUidValue}
+                                  onChange={(e) => setEditingUidValue(e.target.value)}
+                                  placeholder="Enter In-Game UID"
+                                  maxLength={50}
+                                  disabled={savingIgn}
+                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-300 focus:border-[#16A34A] rounded-lg text-xs font-bold font-mono text-slate-900 placeholder:font-sans outline-none"
+                                />
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                disabled={savingIgn}
+                                onClick={() => {
+                                  setEditingSlotKey(null);
+                                  setIgnEditError(null);
+                                }}
+                                className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 rounded-lg text-[10px] font-bold uppercase transition-colors cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={savingIgn || !editingIgnValue.trim() || !editingUidValue.trim()}
+                                className="px-3 py-1.5 bg-[#16A34A] hover:bg-[#15803D] disabled:opacity-50 text-white rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-colors cursor-pointer"
+                              >
+                                {savingIgn ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                                <span>Save</span>
+                              </button>
+                            </div>
                           </form>
                         )}
                       </div>

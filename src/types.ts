@@ -44,7 +44,7 @@ export interface Tournament {
   maxPlayers: number;
   totalSlots: number;
   playersCount: number;
-  players: { userId: string; username: string; ign?: string; slot?: number }[]; // array of player objects
+  players: { userId: string; username: string; ign?: string; gameUid?: string; slot?: number }[]; // array of player objects
   modeId?: string;
   mode: string; // solo / duo / squad / custom
   section: string; // battle royale / clash squad / lone wolf / custom
@@ -59,7 +59,10 @@ export interface Tournament {
   prizeDistribution?: Record<number, number>;
   positionWinnersCount?: number;
   positionPrizeDistribution?: Record<number, number>;
-  status?: 'upcoming' | 'ongoing' | 'completed' | 'active'; // Included active for backward compatibility
+  status?: 'upcoming' | 'ongoing' | 'completed' | 'active' | 'cancelled'; // Included active for backward compatibility
+  cancelReason?: string;
+  cancelledAt?: any;
+  cancelledBy?: string;
   description?: string;
   rules?: string[] | string;
   createdAt?: any;
@@ -127,6 +130,11 @@ export interface User {
   stats: UserStats;
   gameIGNs?: Record<string, string>;
   ign?: string;
+  gameUIDs?: Record<string, string>;
+  gameUid?: string;
+  primaryGame?: string;
+  authProvider?: string;
+  profileCompleted?: boolean;
   referredBy?: string;
   referralCode?: string;
   referralClaimed?: boolean;
